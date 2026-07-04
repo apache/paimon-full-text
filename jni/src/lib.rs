@@ -251,9 +251,10 @@ fn search_json(
         .map_err(|e| format!("failed to read query json: {e}"))?
         .into();
     let query = FullTextQuery::from_json(&query_json).map_err(|e| e.to_string())?;
+    let limit = validate_search_limit(limit)?;
     let result = reader
         .inner
-        .search(query, limit as usize)
+        .search(query, limit)
         .map_err(|e| e.to_string())?;
 
     let row_ids = env
@@ -277,6 +278,13 @@ fn search_json(
         )
         .map_err(|e| e.to_string())?;
     Ok(obj.into_raw())
+}
+
+fn validate_search_limit(limit: jint) -> Result<usize, String> {
+    if limit <= 0 {
+        return Err("search limit must be positive".to_string());
+    }
+    Ok(limit as usize)
 }
 
 fn options_from_arrays(
@@ -331,4 +339,16 @@ fn throw(env: &mut JNIEnv, message: &str) {
 fn throw_and_return<T>(env: &mut JNIEnv, message: &str, value: T) -> T {
     throw(env, message);
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_search_limit;
+
+    #[test]
+    fn validates_search_limit_before_usize_cast() {
+        assert_eq!(validate_search_limit(1), Ok(1));
+        assert!(validate_search_limit(0).is_err());
+        assert!(validate_search_limit(-1).is_err());
+    }
 }

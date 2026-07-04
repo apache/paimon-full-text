@@ -15,6 +15,9 @@ public final class FullTextIndexReader implements AutoCloseable {
         if (query == null) {
             throw new NullPointerException("query");
         }
+        if (limit <= 0) {
+            throw new IllegalArgumentException("search limit must be positive");
+        }
         return FullTextNative.searchJson(requireOpen(), query.toJson(), limit);
     }
 

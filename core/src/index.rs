@@ -366,7 +366,7 @@ fn build_query(
                 *negative_boost,
             ));
             Ok(Box::new(BooleanQuery::new(vec![
-                (Occur::Should, build_query(index, config, positive)?),
+                (Occur::Must, build_query(index, config, positive)?),
                 (Occur::Should, boosted_negative),
             ])))
         }
