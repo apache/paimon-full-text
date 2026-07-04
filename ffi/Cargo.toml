@@ -16,3 +16,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+roaring.workspace = true

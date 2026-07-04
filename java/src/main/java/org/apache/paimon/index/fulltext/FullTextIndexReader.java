@@ -21,6 +21,20 @@ public final class FullTextIndexReader implements AutoCloseable {
         return FullTextNative.searchJson(requireOpen(), query.toJson(), limit);
     }
 
+    public FullTextSearchResult search(FullTextQuery query, int limit, byte[] roaringFilter) {
+        if (query == null) {
+            throw new NullPointerException("query");
+        }
+        if (limit <= 0) {
+            throw new IllegalArgumentException("search limit must be positive");
+        }
+        if (roaringFilter == null) {
+            throw new NullPointerException("roaringFilter");
+        }
+        return FullTextNative.searchJsonWithRoaringFilter(
+                requireOpen(), query.toJson(), limit, roaringFilter);
+    }
+
     @Override
     public void close() {
         long ptr = nativePtr;

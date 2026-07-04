@@ -2,6 +2,7 @@ use paimon_ftindex_core::io::{PosWriter, SliceReader};
 use paimon_ftindex_core::{
     FullTextIndexConfig, FullTextIndexReader, FullTextIndexWriter, FullTextQuery, MatchOperator,
 };
+use roaring::RoaringTreemap;
 
 fn build_index() -> anyhow::Result<Vec<u8>> {
     let mut writer = FullTextIndexWriter::new(FullTextIndexConfig::new())?;
@@ -44,6 +45,89 @@ fn match_query_and_operator_filters_terms() -> anyhow::Result<()> {
     let result = reader.search(query, 10)?;
 
     assert_eq!(result.row_ids, vec![12]);
+    Ok(())
+}
+
+#[test]
+fn search_with_roaring_filter_limits_allowed_row_ids_before_top_docs() -> anyhow::Result<()> {
+    let bytes = build_index()?;
+    let query = FullTextQuery::match_query("paimon", "text");
+
+    let mut reader = FullTextIndexReader::open(SliceReader::new(bytes.clone()))?;
+    let unfiltered_top = reader.search(query.clone(), 1)?.row_ids[0];
+    let allowed_id = if unfiltered_top == 10 { 12 } else { 10 };
+
+    let mut allowed = RoaringTreemap::new();
+    allowed.insert(allowed_id as u64);
+    let mut filter_bytes = Vec::new();
+    allowed.serialize_into(&mut filter_bytes)?;
+
+    let mut reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    let result = reader.search_with_roaring_filter(query, 1, &filter_bytes)?;
+
+    assert_eq!(result.row_ids, vec![allowed_id]);
+    assert_eq!(result.scores.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn search_with_empty_roaring_filter_returns_empty_results() -> anyhow::Result<()> {
+    let bytes = build_index()?;
+    let empty = RoaringTreemap::new();
+    let mut filter_bytes = Vec::new();
+    empty.serialize_into(&mut filter_bytes)?;
+
+    let mut reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    let result = reader.search_with_roaring_filter(
+        FullTextQuery::match_query("paimon", "text"),
+        10,
+        &filter_bytes,
+    )?;
+
+    assert!(result.row_ids.is_empty());
+    assert!(result.scores.is_empty());
+    Ok(())
+}
+
+#[test]
+fn search_with_roaring_filter_supports_64_bit_row_ids() -> anyhow::Result<()> {
+    let allowed_id = (1i64 << 33) + 17;
+    let mut writer = FullTextIndexWriter::new(FullTextIndexConfig::new())?;
+    writer.add_document(1, "apache paimon")?;
+    writer.add_document(allowed_id, "paimon filtered row")?;
+
+    let mut bytes = Vec::new();
+    writer.write(&mut PosWriter::new(&mut bytes))?;
+
+    let mut allowed = RoaringTreemap::new();
+    allowed.insert(allowed_id as u64);
+    let mut filter_bytes = Vec::new();
+    allowed.serialize_into(&mut filter_bytes)?;
+
+    let mut reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    let result = reader.search_with_roaring_filter(
+        FullTextQuery::match_query("paimon", "text"),
+        10,
+        &filter_bytes,
+    )?;
+
+    assert_eq!(result.row_ids, vec![allowed_id]);
+    Ok(())
+}
+
+#[test]
+fn search_rejects_invalid_roaring_filter_bytes() -> anyhow::Result<()> {
+    let bytes = build_index()?;
+    let mut reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    let err = reader
+        .search_with_roaring_filter(
+            FullTextQuery::match_query("paimon", "text"),
+            10,
+            b"not roaring",
+        )
+        .expect_err("invalid filter bytes should fail");
+
+    assert!(err.to_string().contains("invalid RoaringTreemap filter"));
     Ok(())
 }
 

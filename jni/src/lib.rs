@@ -175,7 +175,28 @@ pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_sear
     query_json: JString,
     limit: jint,
 ) -> jobject {
-    match search_json(&mut env, reader_ptr, query_json, limit) {
+    match search_json(&mut env, reader_ptr, query_json, limit, None) {
+        Ok(obj) => obj,
+        Err(e) => throw_and_return(&mut env, &e, ptr::null_mut()),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_searchJsonWithRoaringFilter(
+    mut env: JNIEnv,
+    _class: JClass,
+    reader_ptr: jlong,
+    query_json: JString,
+    limit: jint,
+    roaring_filter: JByteArray,
+) -> jobject {
+    match search_json(
+        &mut env,
+        reader_ptr,
+        query_json,
+        limit,
+        Some(roaring_filter),
+    ) {
         Ok(obj) => obj,
         Err(e) => throw_and_return(&mut env, &e, ptr::null_mut()),
     }
@@ -244,6 +265,7 @@ fn search_json(
     reader_ptr: jlong,
     query_json: JString,
     limit: jint,
+    roaring_filter: Option<JByteArray>,
 ) -> Result<jobject, String> {
     let reader = handle_mut::<ReaderHandle>(reader_ptr, "reader")?;
     let query_json: String = env
@@ -252,10 +274,18 @@ fn search_json(
         .into();
     let query = FullTextQuery::from_json(&query_json).map_err(|e| e.to_string())?;
     let limit = validate_search_limit(limit)?;
-    let result = reader
-        .inner
-        .search(query, limit)
-        .map_err(|e| e.to_string())?;
+    let result = if let Some(roaring_filter) = roaring_filter {
+        let roaring_filter = read_byte_array(env, roaring_filter)?;
+        reader
+            .inner
+            .search_with_roaring_filter(query, limit, &roaring_filter)
+            .map_err(|e| e.to_string())?
+    } else {
+        reader
+            .inner
+            .search(query, limit)
+            .map_err(|e| e.to_string())?
+    };
 
     let row_ids = env
         .new_long_array(result.row_ids.len() as i32)
@@ -285,6 +315,14 @@ fn validate_search_limit(limit: jint) -> Result<usize, String> {
         return Err("search limit must be positive".to_string());
     }
     Ok(limit as usize)
+}
+
+fn read_byte_array(env: &mut JNIEnv, array: JByteArray) -> Result<Vec<u8>, String> {
+    if array.as_raw().is_null() {
+        return Err("roaringFilter is null".to_string());
+    }
+    env.convert_byte_array(array)
+        .map_err(|e| format!("failed to read roaringFilter: {e}"))
 }
 
 fn options_from_arrays(

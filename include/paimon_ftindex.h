@@ -51,6 +51,17 @@ int paimon_ftindex_reader_search_json(
     size_t capacity,
     size_t *result_len);
 
+int paimon_ftindex_reader_search_json_with_roaring_filter(
+    PaimonFtindexReaderHandle *reader,
+    const char *query_json,
+    size_t limit,
+    const uint8_t *roaring_filter,
+    size_t roaring_filter_len,
+    int64_t *row_ids,
+    float *scores,
+    size_t capacity,
+    size_t *result_len);
+
 void paimon_ftindex_reader_free(PaimonFtindexReaderHandle *reader);
 
 #ifdef __cplusplus

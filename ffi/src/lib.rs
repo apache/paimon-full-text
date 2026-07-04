@@ -160,6 +160,16 @@ pub struct PaimonFtindexReaderHandle {
     inner: FullTextIndexReader<FfiInputFile>,
 }
 
+struct SearchJsonRequest<'a> {
+    query_json: *const c_char,
+    limit: usize,
+    roaring_filter: Option<&'a [u8]>,
+    row_ids: *mut i64,
+    scores: *mut f32,
+    capacity: usize,
+    result_len: *mut usize,
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn paimon_ftindex_writer_open(
     keys: *const *const c_char,
@@ -237,38 +247,48 @@ pub unsafe extern "C" fn paimon_ftindex_reader_search_json(
 ) -> c_int {
     ffi_status(|| {
         let reader = require_mut(reader, "reader")?;
-        if result_len.is_null() {
-            return Err("result_len is null".to_string());
-        }
-        let query_json = cstr_to_string(query_json, "query_json")?;
-        let query = FullTextQuery::from_json(&query_json).map_err(|e| e.to_string())?;
-        let result = reader
-            .inner
-            .search(query, limit)
-            .map_err(|e| e.to_string())?;
-        unsafe {
-            *result_len = result.row_ids.len();
-        }
-        if result.row_ids.len() > capacity {
-            return Err(format!(
-                "result capacity {} is smaller than result length {}",
+        search_json_impl(
+            reader,
+            SearchJsonRequest {
+                query_json,
+                limit,
+                roaring_filter: None,
+                row_ids,
+                scores,
                 capacity,
-                result.row_ids.len()
-            ));
-        }
-        if !result.row_ids.is_empty() {
-            if row_ids.is_null() {
-                return Err("row_ids is null".to_string());
-            }
-            if scores.is_null() {
-                return Err("scores is null".to_string());
-            }
-            unsafe {
-                ptr::copy_nonoverlapping(result.row_ids.as_ptr(), row_ids, result.row_ids.len());
-                ptr::copy_nonoverlapping(result.scores.as_ptr(), scores, result.scores.len());
-            }
-        }
-        Ok(())
+                result_len,
+            },
+        )
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn paimon_ftindex_reader_search_json_with_roaring_filter(
+    reader: *mut PaimonFtindexReaderHandle,
+    query_json: *const c_char,
+    limit: usize,
+    roaring_filter: *const u8,
+    roaring_filter_len: usize,
+    row_ids: *mut i64,
+    scores: *mut f32,
+    capacity: usize,
+    result_len: *mut usize,
+) -> c_int {
+    ffi_status(|| {
+        let reader = require_mut(reader, "reader")?;
+        let roaring_filter = const_slice(roaring_filter, roaring_filter_len, "roaring_filter")?;
+        search_json_impl(
+            reader,
+            SearchJsonRequest {
+                query_json,
+                limit,
+                roaring_filter: Some(roaring_filter),
+                row_ids,
+                scores,
+                capacity,
+                result_len,
+            },
+        )
     })
 }
 
@@ -308,6 +328,16 @@ unsafe fn require_mut<'a, T>(ptr: *mut T, name: &str) -> Result<&'a mut T, Strin
     ptr.as_mut().ok_or_else(|| format!("{name} is null"))
 }
 
+unsafe fn const_slice<'a, T>(ptr: *const T, len: usize, name: &str) -> Result<&'a [T], String> {
+    if len == 0 {
+        Ok(&[])
+    } else if ptr.is_null() {
+        Err(format!("{name} is null"))
+    } else {
+        Ok(slice::from_raw_parts(ptr, len))
+    }
+}
+
 unsafe fn cstr_to_string(ptr: *const c_char, name: &str) -> Result<String, String> {
     if ptr.is_null() {
         return Err(format!("{name} is null"));
@@ -318,9 +348,59 @@ unsafe fn cstr_to_string(ptr: *const c_char, name: &str) -> Result<String, Strin
         .map_err(|e| format!("{name} is not valid UTF-8: {e}"))
 }
 
+fn search_json_impl(
+    reader: &mut PaimonFtindexReaderHandle,
+    request: SearchJsonRequest<'_>,
+) -> Result<(), String> {
+    if request.result_len.is_null() {
+        return Err("result_len is null".to_string());
+    }
+    let query_json = unsafe { cstr_to_string(request.query_json, "query_json") }?;
+    let query = FullTextQuery::from_json(&query_json).map_err(|e| e.to_string())?;
+    let result = if let Some(roaring_filter) = request.roaring_filter {
+        reader
+            .inner
+            .search_with_roaring_filter(query, request.limit, roaring_filter)
+            .map_err(|e| e.to_string())?
+    } else {
+        reader
+            .inner
+            .search(query, request.limit)
+            .map_err(|e| e.to_string())?
+    };
+    unsafe {
+        *request.result_len = result.row_ids.len();
+    }
+    if result.row_ids.len() > request.capacity {
+        return Err(format!(
+            "result capacity {} is smaller than result length {}",
+            request.capacity,
+            result.row_ids.len()
+        ));
+    }
+    if !result.row_ids.is_empty() {
+        if request.row_ids.is_null() {
+            return Err("row_ids is null".to_string());
+        }
+        if request.scores.is_null() {
+            return Err("scores is null".to_string());
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(
+                result.row_ids.as_ptr(),
+                request.row_ids,
+                result.row_ids.len(),
+            );
+            ptr::copy_nonoverlapping(result.scores.as_ptr(), request.scores, result.scores.len());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roaring::RoaringTreemap;
     use std::ffi::CString;
 
     unsafe extern "C" fn write_vec(ctx: *mut c_void, buf: *const u8, len: usize) -> c_int {
@@ -391,6 +471,73 @@ mod tests {
             );
             assert_eq!(result_len, 1);
             assert_eq!(row_ids[0], 7);
+            assert!(scores[0] > 0.0);
+            paimon_ftindex_reader_free(reader);
+        }
+    }
+
+    #[test]
+    fn ffi_round_trip_search_json_with_roaring_filter() {
+        unsafe {
+            let writer = paimon_ftindex_writer_open(ptr::null(), ptr::null(), 0);
+            assert!(!writer.is_null());
+
+            let text = CString::new("Apache Paimon full text").unwrap();
+            assert_eq!(
+                paimon_ftindex_writer_add_document(writer, 7, text.as_ptr()),
+                0
+            );
+            let text = CString::new("Paimon filtered row").unwrap();
+            assert_eq!(
+                paimon_ftindex_writer_add_document(writer, 9, text.as_ptr()),
+                0
+            );
+
+            let mut bytes = Vec::new();
+            let output = PaimonFtindexOutputFile {
+                ctx: &mut bytes as *mut Vec<u8> as *mut c_void,
+                write_fn: Some(write_vec),
+                flush_fn: None,
+            };
+            assert_eq!(paimon_ftindex_writer_write_index(writer, output), 0);
+            paimon_ftindex_writer_free(writer);
+
+            let input = PaimonFtindexInputFile {
+                ctx: &bytes as *const Vec<u8> as *mut c_void,
+                read_at_fn: Some(read_vec),
+            };
+            let reader = paimon_ftindex_reader_open(input);
+            assert!(!reader.is_null());
+
+            let query = CString::new(
+                paimon_ftindex_core::FullTextQuery::match_query("paimon", "text")
+                    .to_json()
+                    .unwrap(),
+            )
+            .unwrap();
+            let mut allowed = RoaringTreemap::new();
+            allowed.insert(9);
+            let mut filter_bytes = Vec::new();
+            allowed.serialize_into(&mut filter_bytes).unwrap();
+            let mut row_ids = [0i64; 4];
+            let mut scores = [0f32; 4];
+            let mut result_len = 0usize;
+            assert_eq!(
+                paimon_ftindex_reader_search_json_with_roaring_filter(
+                    reader,
+                    query.as_ptr(),
+                    4,
+                    filter_bytes.as_ptr(),
+                    filter_bytes.len(),
+                    row_ids.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    row_ids.len(),
+                    &mut result_len,
+                ),
+                0
+            );
+            assert_eq!(result_len, 1);
+            assert_eq!(row_ids[0], 9);
             assert!(scores[0] > 0.0);
             paimon_ftindex_reader_free(reader);
         }

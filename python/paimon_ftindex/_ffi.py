@@ -39,9 +39,13 @@ def _load_library():
     candidates = [
         os.path.join(pkg_dir, lib_name),
         os.path.join(pkg_dir, "..", "..", "target", "debug", lib_name),
+        os.path.join(pkg_dir, "..", "..", "target", "debug", "deps", lib_name),
         os.path.join(pkg_dir, "..", "..", "target", "release", lib_name),
+        os.path.join(pkg_dir, "..", "..", "target", "release", "deps", lib_name),
         os.path.join(pkg_dir, "..", "..", "..", "target", "debug", lib_name),
+        os.path.join(pkg_dir, "..", "..", "..", "target", "debug", "deps", lib_name),
         os.path.join(pkg_dir, "..", "..", "..", "target", "release", lib_name),
+        os.path.join(pkg_dir, "..", "..", "..", "target", "release", "deps", lib_name),
     ]
     for candidate in candidates:
         candidate = os.path.abspath(candidate)
@@ -100,6 +104,19 @@ lib.paimon_ftindex_reader_search_json.argtypes = [
     POINTER(c_size_t),
 ]
 lib.paimon_ftindex_reader_search_json.restype = c_int
+
+lib.paimon_ftindex_reader_search_json_with_roaring_filter.argtypes = [
+    c_void_p,
+    c_char_p,
+    c_size_t,
+    POINTER(c_uint8),
+    c_size_t,
+    POINTER(c_int64),
+    POINTER(c_float),
+    c_size_t,
+    POINTER(c_size_t),
+]
+lib.paimon_ftindex_reader_search_json_with_roaring_filter.restype = c_int
 
 lib.paimon_ftindex_reader_free.argtypes = [c_void_p]
 lib.paimon_ftindex_reader_free.restype = None

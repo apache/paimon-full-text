@@ -25,5 +25,8 @@ final class FullTextNative {
 
     static native FullTextSearchResult searchJson(long readerPtr, String queryJson, int limit);
 
+    static native FullTextSearchResult searchJsonWithRoaringFilter(
+            long readerPtr, String queryJson, int limit, byte[] roaringFilter);
+
     static native void freeReader(long readerPtr);
 }

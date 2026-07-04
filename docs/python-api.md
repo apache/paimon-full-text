@@ -17,7 +17,14 @@ with FullTextIndexWriter({"tokenizer": "ngram"}) as writer:
 
 with FullTextIndexReader(input_) as reader:
     ids, scores = reader.search(MatchQuery("paimon"), limit=10)
+    filtered_ids, filtered_scores = reader.search(
+        MatchQuery("paimon"), limit=10, filter_bytes=roaring_filter_bytes
+    )
 ```
+
+`filter_bytes` must be a serialized 64-bit Roaring bitmap (`RoaringTreemap`)
+containing the allowed row ids. The filter is applied during Tantivy
+collection, before the top results are selected.
 
 The output object must provide:
 
@@ -31,5 +38,5 @@ The input object must provide:
 Native loading:
 
 - Set `PAIMON_FTINDEX_LIB_PATH` to a library file or directory, or
-- build `paimon-ftindex-ffi` so the package can discover `target/debug` or
-  `target/release`.
+- build `paimon-ftindex-ffi` so the package can discover `target/debug`,
+  `target/debug/deps`, `target/release`, or `target/release/deps`.

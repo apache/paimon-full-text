@@ -4,10 +4,11 @@ use crate::io::{SeekRead, SeekWrite};
 use crate::query::{BooleanOccur, FullTextQuery, MatchOperator};
 use crate::storage::{read_exact_at, read_header, write_envelope, ArchiveFileEntry, IndexHeader};
 use crate::tokenizer::{TokenizerConfig, TokenizerKind};
+use roaring::RoaringTreemap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use tantivy::collector::TopDocs;
+use tantivy::collector::{FilterCollector, TopDocs};
 use tantivy::directory::{Directory, RamDirectory};
 use tantivy::query::{
     BooleanQuery, BoostQuery, EnableScoring, Explanation, Occur, Query, QueryParser, Scorer, Weight,
@@ -131,6 +132,25 @@ impl<R: SeekRead> FullTextIndexReader<R> {
     }
 
     pub fn search(&mut self, query: FullTextQuery, limit: usize) -> Result<FullTextSearchResult> {
+        self.search_with_filter(query, limit, None)
+    }
+
+    pub fn search_with_roaring_filter(
+        &mut self,
+        query: FullTextQuery,
+        limit: usize,
+        roaring_filter_bytes: &[u8],
+    ) -> Result<FullTextSearchResult> {
+        let filter = decode_roaring_filter(roaring_filter_bytes)?;
+        self.search_with_filter(query, limit, Some(filter))
+    }
+
+    fn search_with_filter(
+        &mut self,
+        query: FullTextQuery,
+        limit: usize,
+        filter: Option<RoaringTreemap>,
+    ) -> Result<FullTextSearchResult> {
         if limit == 0 {
             return Err(FtIndexError::InvalidQuery(
                 "search limit must be positive".to_string(),
@@ -139,7 +159,17 @@ impl<R: SeekRead> FullTextIndexReader<R> {
         let reader = self.index.reader()?;
         let searcher = reader.searcher();
         let tantivy_query = build_query(&self.index, &self.metadata.config, &query)?;
-        let top_docs = searcher.search(&tantivy_query, &TopDocs::with_limit(limit))?;
+        let top_docs = if let Some(filter) = filter {
+            let row_id_field = self.metadata.config.row_id_field.clone();
+            let collector = FilterCollector::new(
+                row_id_field,
+                move |row_id: u64| filter.contains(row_id),
+                TopDocs::with_limit(limit),
+            );
+            searcher.search(&tantivy_query, &collector)?
+        } else {
+            searcher.search(&tantivy_query, &TopDocs::with_limit(limit))?
+        };
         let mut row_ids = Vec::with_capacity(top_docs.len());
         let mut scores = Vec::with_capacity(top_docs.len());
         for (score, doc_address) in top_docs {
@@ -153,6 +183,11 @@ impl<R: SeekRead> FullTextIndexReader<R> {
         }
         Ok(FullTextSearchResult { row_ids, scores })
     }
+}
+
+fn decode_roaring_filter(bytes: &[u8]) -> Result<RoaringTreemap> {
+    RoaringTreemap::deserialize_from(bytes)
+        .map_err(|e| FtIndexError::InvalidQuery(format!("invalid RoaringTreemap filter: {e}")))
 }
 
 fn build_schema(config: &FullTextIndexConfig) -> Schema {

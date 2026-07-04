@@ -250,6 +250,17 @@ int paimon_ftindex_reader_search_json(
     float *scores,
     size_t capacity,
     size_t *result_len);
+
+int paimon_ftindex_reader_search_json_with_roaring_filter(
+    PaimonFtindexReaderHandle *reader,
+    const char *query_json,
+    size_t limit,
+    const uint8_t *roaring_filter,
+    size_t roaring_filter_len,
+    int64_t *row_ids,
+    float *scores,
+    size_t capacity,
+    size_t *result_len);
 ```
 
 All functions return `0` on success and `-1` on error. A thread-local
@@ -291,6 +302,8 @@ try (FullTextIndexWriter writer = FullTextIndexWriter.create(options)) {
 try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
     FullTextSearchResult result =
             reader.search(FullTextQuery.match("paimon", "text"), 10);
+    FullTextSearchResult filtered =
+            reader.search(FullTextQuery.match("paimon", "text"), 10, roaringFilterBytes);
 }
 ```
 
@@ -320,6 +333,11 @@ writer.write(output)
 
 reader = FullTextIndexReader(input)
 ids, scores = reader.search(MatchQuery("paimon", column="text"), limit=10)
+filtered_ids, filtered_scores = reader.search(
+    MatchQuery("paimon", column="text"),
+    limit=10,
+    filter_bytes=roaring_filter_bytes,
+)
 ```
 
 Python I/O protocol:
@@ -441,6 +459,3 @@ matching the caution already present in upstream `paimon-tantivy-jni`.
 - Should Java native loading copy prebuilt libraries from resources, or should
   this repository initially require `PAIMON_FTINDEX_LIB_PATH` like the Python
   package?
-- Should v1 expose row-id prefiltering with serialized 64-bit Roaring bitmaps,
-  matching vector-index, or defer it until Paimon needs hybrid scalar plus
-  full-text search?

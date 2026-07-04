@@ -17,7 +17,8 @@ and do not depend on Paimon manifest metadata.
 Implemented:
 
 - Rust writer, reader, v1 envelope, and search.
-- C FFI writer/reader/search JSON.
+- C FFI writer/reader/search JSON, including serialized 64-bit Roaring row-id
+  filters.
 - Java API and JNI bridge.
 - Python ctypes package.
 - Cross-boundary round-trip tests for Rust core, FFI, and Python.
@@ -67,6 +68,17 @@ let mut reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
 let result = reader.search(FullTextQuery::match_query("paimon", "text"), 10)?;
 ```
 
+To restrict search to an upstream candidate set, pass a serialized
+`RoaringTreemap` of allowed row ids:
+
+```rust
+let filtered = reader.search_with_roaring_filter(
+    FullTextQuery::match_query("paimon", "text"),
+    10,
+    roaring_filter_bytes,
+)?;
+```
+
 ## Python Example
 
 ```python
@@ -86,4 +98,7 @@ class Input:
 
 with FullTextIndexReader(Input(out.getvalue())) as reader:
     ids, scores = reader.search(MatchQuery("paimon"), limit=10)
+    filtered_ids, filtered_scores = reader.search(
+        MatchQuery("paimon"), limit=10, filter_bytes=roaring_filter_bytes
+    )
 ```

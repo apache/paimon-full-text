@@ -25,8 +25,14 @@ try (FullTextIndexWriter writer = FullTextIndexWriter.create(Collections.emptyMa
 
 try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
     FullTextSearchResult result = reader.search(FullTextQuery.match("paimon", "text"), 10);
+    FullTextSearchResult filtered =
+            reader.search(FullTextQuery.match("paimon", "text"), 10, roaringFilterBytes);
 }
 ```
+
+`roaringFilterBytes` must be a serialized 64-bit Roaring bitmap
+(`RoaringTreemap`) containing the allowed row ids. The filter is applied during
+Tantivy collection, before the top results are selected.
 
 Native loading:
 

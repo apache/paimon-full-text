@@ -7,6 +7,8 @@ integration should be a thin adapter:
 - Serialize queries to the JSON accepted by this library.
 - Implement a Paimon `GlobalIndexerFactory` that delegates to Java
   `FullTextIndexWriter` and `FullTextIndexReader`.
+- Pass serialized 64-bit Roaring row-id filters to reader search when another
+  index or predicate pushdown has already produced an allowed candidate set.
 - Store produced files as global index files.
 
 Suggested index identifier:

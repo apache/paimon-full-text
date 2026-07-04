@@ -1,5 +1,5 @@
 import ctypes
-from ctypes import c_float, c_int64, c_size_t, c_void_p
+from ctypes import c_float, c_int64, c_size_t, c_uint8, c_void_p
 
 from ._ffi import (
     READ_AT_FN,
@@ -30,7 +30,7 @@ class FullTextIndexReader:
         native_input = PaimonFtindexInputFile(c_void_p(0), read_at_fn)
         self._ptr = check_ptr(lib.paimon_ftindex_reader_open(native_input))
 
-    def search(self, query, limit=10):
+    def search(self, query, limit=10, filter_bytes=None):
         if self._closed:
             raise RuntimeError("FullTextIndexReader is closed")
         query_json = query.to_json() if hasattr(query, "to_json") else str(query)
@@ -38,8 +38,8 @@ class FullTextIndexReader:
         row_ids = (c_int64 * capacity)()
         scores = (c_float * capacity)()
         result_len = c_size_t()
-        check_status(
-            lib.paimon_ftindex_reader_search_json(
+        if filter_bytes is None:
+            status = lib.paimon_ftindex_reader_search_json(
                 self._ptr,
                 query_json.encode("utf-8"),
                 capacity,
@@ -48,7 +48,21 @@ class FullTextIndexReader:
                 capacity,
                 ctypes.byref(result_len),
             )
-        )
+        else:
+            filter_bytes = bytes(filter_bytes)
+            filter_buf = (c_uint8 * len(filter_bytes)).from_buffer_copy(filter_bytes)
+            status = lib.paimon_ftindex_reader_search_json_with_roaring_filter(
+                self._ptr,
+                query_json.encode("utf-8"),
+                capacity,
+                filter_buf,
+                len(filter_bytes),
+                row_ids,
+                scores,
+                capacity,
+                ctypes.byref(result_len),
+            )
+        check_status(status)
         size = result_len.value
         return list(row_ids[:size]), list(scores[:size])
 
