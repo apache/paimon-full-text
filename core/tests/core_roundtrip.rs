@@ -79,6 +79,28 @@ fn boost_query_requires_positive_match() -> anyhow::Result<()> {
 }
 
 #[test]
+fn boost_query_demotes_negative_matches() -> anyhow::Result<()> {
+    let mut writer = FullTextIndexWriter::new(FullTextIndexConfig::new())?;
+    writer.add_document(1, "paimon good")?;
+    writer.add_document(2, "paimon bad")?;
+
+    let mut bytes = Vec::new();
+    writer.write(&mut PosWriter::new(&mut bytes))?;
+
+    let mut reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    let query = FullTextQuery::Boost {
+        positive: Box::new(FullTextQuery::match_query("paimon", "text")),
+        negative: Box::new(FullTextQuery::match_query("bad", "text")),
+        negative_boost: 0.5,
+    };
+    let result = reader.search(query, 10)?;
+
+    assert_eq!(result.row_ids, vec![1, 2]);
+    assert!(result.scores[0] > result.scores[1]);
+    Ok(())
+}
+
+#[test]
 fn query_json_round_trip() -> anyhow::Result<()> {
     let query = FullTextQuery::match_query("apache paimon", "text").operator_and();
     let json = query.to_json()?;

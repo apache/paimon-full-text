@@ -167,7 +167,8 @@ Supported v1 queries:
 - `match`: tokenized term query with `OR` or `AND`.
 - `match_phrase`: phrase query when positions are enabled.
 - `boolean`: `should`, `must`, `must_not`.
-- `boost`: score demotion or promotion by composing child query scores.
+- `boost`: positive query must match; matching the negative query multiplies
+  the positive score by `negative_boost` for demotion.
 
 Deferred:
 

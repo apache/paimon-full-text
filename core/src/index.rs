@@ -4,17 +4,20 @@ use crate::io::{SeekRead, SeekWrite};
 use crate::query::{BooleanOccur, FullTextQuery, MatchOperator};
 use crate::storage::{read_exact_at, read_header, write_envelope, ArchiveFileEntry, IndexHeader};
 use crate::tokenizer::{TokenizerConfig, TokenizerKind};
+use std::fmt;
 use std::fs;
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::directory::{Directory, RamDirectory};
-use tantivy::query::{BooleanQuery, BoostQuery, Occur, Query, QueryParser};
+use tantivy::query::{
+    BooleanQuery, BoostQuery, EnableScoring, Explanation, Occur, Query, QueryParser, Scorer, Weight,
+};
 use tantivy::schema::{IndexRecordOption, NumericOptions, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{
     AsciiFoldingFilter, LowerCaser, NgramTokenizer, RawTokenizer, RemoveLongFilter,
     SimpleTokenizer, TextAnalyzer, WhitespaceTokenizer,
 };
-use tantivy::{Index, TantivyDocument};
+use tantivy::{DocId, DocSet, Index, Score, SegmentReader, TantivyDocument, TERMINATED};
 use tempfile::TempDir;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -361,15 +364,167 @@ fn build_query(
             negative,
             negative_boost,
         } => {
-            let boosted_negative = Box::new(BoostQuery::new(
+            validate_negative_boost(*negative_boost)?;
+            Ok(Box::new(DemoteQuery::new(
+                build_query(index, config, positive)?,
                 build_query(index, config, negative)?,
                 *negative_boost,
-            ));
-            Ok(Box::new(BooleanQuery::new(vec![
-                (Occur::Must, build_query(index, config, positive)?),
-                (Occur::Should, boosted_negative),
-            ])))
+            )))
         }
+    }
+}
+
+fn validate_negative_boost(negative_boost: f32) -> Result<()> {
+    if !negative_boost.is_finite() || !(0.0..=1.0).contains(&negative_boost) {
+        return Err(FtIndexError::InvalidQuery(format!(
+            "negative_boost must be a finite value in [0.0, 1.0], got {negative_boost}"
+        )));
+    }
+    Ok(())
+}
+
+struct DemoteQuery {
+    positive: Box<dyn Query>,
+    negative: Box<dyn Query>,
+    negative_boost: Score,
+}
+
+impl DemoteQuery {
+    fn new(positive: Box<dyn Query>, negative: Box<dyn Query>, negative_boost: Score) -> Self {
+        Self {
+            positive,
+            negative,
+            negative_boost,
+        }
+    }
+}
+
+impl Clone for DemoteQuery {
+    fn clone(&self) -> Self {
+        Self {
+            positive: self.positive.box_clone(),
+            negative: self.negative.box_clone(),
+            negative_boost: self.negative_boost,
+        }
+    }
+}
+
+impl fmt::Debug for DemoteQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Demote(positive={:?}, negative={:?}, negative_boost={})",
+            self.positive, self.negative, self.negative_boost
+        )
+    }
+}
+
+impl Query for DemoteQuery {
+    fn weight(&self, enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        let positive_weight = self.positive.weight(enable_scoring)?;
+        if !enable_scoring.is_scoring_enabled() {
+            return Ok(positive_weight);
+        }
+        let negative_weight = self.negative.weight(EnableScoring::Disabled {
+            schema: enable_scoring.schema(),
+            searcher_opt: enable_scoring.searcher(),
+        })?;
+        Ok(Box::new(DemoteWeight {
+            positive: positive_weight,
+            negative: negative_weight,
+            negative_boost: self.negative_boost,
+        }))
+    }
+
+    fn query_terms<'a>(&'a self, visitor: &mut dyn FnMut(&'a tantivy::Term, bool)) {
+        self.positive.query_terms(visitor);
+        self.negative.query_terms(visitor);
+    }
+}
+
+struct DemoteWeight {
+    positive: Box<dyn Weight>,
+    negative: Box<dyn Weight>,
+    negative_boost: Score,
+}
+
+impl Weight for DemoteWeight {
+    fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
+        Ok(Box::new(DemoteScorer {
+            positive: self.positive.scorer(reader, boost)?,
+            negative: self.negative.scorer(reader, 1.0)?,
+            negative_boost: self.negative_boost,
+        }))
+    }
+
+    fn explain(&self, reader: &SegmentReader, doc: DocId) -> tantivy::Result<Explanation> {
+        let positive_explanation = self.positive.explain(reader, doc)?;
+        let mut negative_scorer = self.negative.scorer(reader, 1.0)?;
+        let matched_negative = matches_doc(negative_scorer.as_mut(), doc);
+        let factor = if matched_negative {
+            self.negative_boost
+        } else {
+            1.0
+        };
+        let score = positive_explanation.value() * factor;
+        let mut explanation =
+            Explanation::new_with_string(format!("Demote by negative query x{factor}"), score);
+        explanation.add_detail(positive_explanation);
+        if matched_negative {
+            explanation.add_const("negative_boost", self.negative_boost);
+        }
+        Ok(explanation)
+    }
+
+    fn count(&self, reader: &SegmentReader) -> tantivy::Result<u32> {
+        self.positive.count(reader)
+    }
+}
+
+struct DemoteScorer {
+    positive: Box<dyn Scorer>,
+    negative: Box<dyn Scorer>,
+    negative_boost: Score,
+}
+
+impl DocSet for DemoteScorer {
+    fn advance(&mut self) -> DocId {
+        self.positive.advance()
+    }
+
+    fn seek(&mut self, target: DocId) -> DocId {
+        self.positive.seek(target)
+    }
+
+    fn doc(&self) -> DocId {
+        self.positive.doc()
+    }
+
+    fn size_hint(&self) -> u32 {
+        self.positive.size_hint()
+    }
+}
+
+impl Scorer for DemoteScorer {
+    fn score(&mut self) -> Score {
+        let positive_score = self.positive.score();
+        if matches_doc(self.negative.as_mut(), self.positive.doc()) {
+            positive_score * self.negative_boost
+        } else {
+            positive_score
+        }
+    }
+}
+
+fn matches_doc(docset: &mut dyn DocSet, doc: DocId) -> bool {
+    if doc == TERMINATED {
+        return false;
+    }
+    let current = docset.doc();
+    if current < doc {
+        docset.seek(doc) == doc
+    } else {
+        current == doc
     }
 }
 
