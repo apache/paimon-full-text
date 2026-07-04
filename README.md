@@ -20,7 +20,7 @@ Implemented:
 - C FFI writer/reader/search JSON.
 - Java API and JNI bridge.
 - Python ctypes package.
-- Cross-boundary round-trip tests for Rust core, FFI, and Python.
+- Cross-boundary round-trip tests for Rust core, FFI, Java/JNI, and Python.
 
 Supported tokenizers in this first implementation:
 
@@ -44,7 +44,7 @@ Reserved for follow-up:
 cargo test -p paimon-ftindex-core
 cargo test -p paimon-ftindex-ffi
 cargo build -p paimon-ftindex-ffi
-cargo check -p paimon-ftindex-jni
+cargo build -p paimon-ftindex-jni
 mvn -q -f java/pom.xml test
 PYTHONPATH=python python3 -m pytest -q python/tests
 ```
