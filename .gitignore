@@ -19,7 +19,7 @@
 /target/
 
 # Java
-java/target/
+/java/target/
 java/src/main/resources/native/
 *.class
 
@@ -30,13 +30,13 @@ c/build/
 cpp/build/
 
 # Python
-__pycache__/
-*.pyc
-*.egg-info/
+**/__pycache__/
+*.py[cod]
+**/*.egg-info/
 python/dist/
 python/build/
 python/target/
-.pytest_cache/
+**/.pytest_cache/
 
 # IDE
 .idea/
@@ -46,4 +46,3 @@ python/target/
 # OS
 .DS_Store
 Thumbs.db
-

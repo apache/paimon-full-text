@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paimon-ftindex"
+version = "0.1.0"
+description = "Python bindings for Apache Paimon Full Text Index"
+requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]

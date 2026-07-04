@@ -1,0 +1,32 @@
+# Paimon Integration
+
+The standalone library is intentionally independent of Paimon core. Paimon
+integration should be a thin adapter:
+
+- Keep `FullTextQuery` / `FullTextSearch` in Paimon common as query API.
+- Serialize queries to the JSON accepted by this library.
+- Implement a Paimon `GlobalIndexerFactory` that delegates to Java
+  `FullTextIndexWriter` and `FullTextIndexReader`.
+- Store produced files as global index files.
+
+Suggested index identifier:
+
+```text
+fulltext
+```
+
+Suggested option namespace:
+
+```text
+fulltext.tokenizer
+fulltext.ngram.min-gram
+fulltext.ngram.max-gram
+fulltext.ngram.prefix-only
+fulltext.lower-case
+fulltext.max-token-length
+fulltext.ascii-folding
+fulltext.with-position
+```
+
+The standalone library accepts both unprefixed keys and `fulltext.` prefixed
+keys.
