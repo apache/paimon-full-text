@@ -60,7 +60,10 @@ pub enum FullTextQuery {
         operator: MatchOperator,
         #[serde(default = "default_boost")]
         boost: f32,
-        #[serde(default = "default_fuzziness", deserialize_with = "deserialize_fuzziness")]
+        #[serde(
+            default = "default_fuzziness",
+            deserialize_with = "deserialize_fuzziness"
+        )]
         fuzziness: Option<u8>,
         #[serde(default = "default_max_expansions", alias = "maxExpansions")]
         max_expansions: usize,
