@@ -329,8 +329,12 @@ fn build_query(
             terms,
             operator,
             boost,
+            fuzziness,
+            max_expansions,
+            prefix_length,
         } => {
             validate_column(config, column)?;
+            validate_match_options(*fuzziness, *max_expansions, *prefix_length)?;
             let text_field = index
                 .schema()
                 .get_field(&config.text_field)
@@ -374,13 +378,28 @@ fn build_query(
                 .parse_query(&query_text)
                 .map_err(|e| FtIndexError::InvalidQuery(e.to_string()))
         }
-        FullTextQuery::Boolean { queries } => {
-            if queries.is_empty() {
+        FullTextQuery::Boolean {
+            should,
+            must,
+            must_not,
+            queries,
+        } => {
+            if should.is_empty() && must.is_empty() && must_not.is_empty() && queries.is_empty() {
                 return Err(FtIndexError::InvalidQuery(
                     "boolean query must contain at least one clause".to_string(),
                 ));
             }
-            let mut children = Vec::with_capacity(queries.len());
+            let mut children =
+                Vec::with_capacity(should.len() + must.len() + must_not.len() + queries.len());
+            for child in should {
+                children.push((Occur::Should, build_query(index, config, child)?));
+            }
+            for child in must {
+                children.push((Occur::Must, build_query(index, config, child)?));
+            }
+            for child in must_not {
+                children.push((Occur::MustNot, build_query(index, config, child)?));
+            }
             for (occur, child) in queries {
                 let occur = match occur {
                     BooleanOccur::Should => Occur::Should,
@@ -404,6 +423,29 @@ fn build_query(
             )))
         }
     }
+}
+
+fn validate_match_options(
+    fuzziness: Option<u8>,
+    max_expansions: usize,
+    prefix_length: u32,
+) -> Result<()> {
+    if fuzziness.unwrap_or(0) != 0 {
+        return Err(FtIndexError::InvalidQuery(
+            "match query fuzziness is not supported by paimon-full-text yet".to_string(),
+        ));
+    }
+    if max_expansions != 50 {
+        return Err(FtIndexError::InvalidQuery(
+            "match query max_expansions is not supported by paimon-full-text yet".to_string(),
+        ));
+    }
+    if prefix_length != 0 {
+        return Err(FtIndexError::InvalidQuery(
+            "match query prefix_length is not supported by paimon-full-text yet".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_negative_boost(negative_boost: f32) -> Result<()> {
@@ -560,12 +602,12 @@ fn matches_doc(docset: &mut dyn DocSet, doc: DocId) -> bool {
     }
 }
 
-fn validate_column(config: &FullTextIndexConfig, column: &str) -> Result<()> {
-    if column == config.text_field {
+fn validate_column(_config: &FullTextIndexConfig, column: &str) -> Result<()> {
+    if !column.trim().is_empty() {
         Ok(())
     } else {
-        Err(FtIndexError::InvalidQuery(format!(
-            "unknown full-text column '{column}'"
-        )))
+        Err(FtIndexError::InvalidQuery(
+            "full-text query column must not be empty".to_string(),
+        ))
     }
 }

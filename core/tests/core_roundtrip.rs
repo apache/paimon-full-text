@@ -102,6 +102,9 @@ fn match_query_and_operator_filters_terms() -> anyhow::Result<()> {
         terms: "paimon indexes".to_string(),
         operator: MatchOperator::And,
         boost: 1.0,
+        fuzziness: Some(0),
+        max_expansions: 50,
+        prefix_length: 0,
     };
     let result = reader.search(query, 10)?;
 
@@ -314,5 +317,56 @@ fn query_json_round_trip() -> anyhow::Result<()> {
     let parsed = FullTextQuery::from_json(&json)?;
 
     assert_eq!(parsed, query);
+    Ok(())
+}
+
+#[test]
+fn parse_paimon_match_query_json_aliases() -> anyhow::Result<()> {
+    let query = FullTextQuery::from_json(
+        r#"{"match":{"column":"text","query":"paimon","operator":"AND","boost":2.0,"fuzziness":0,"maxExpansions":50,"prefixLength":0}}"#,
+    )?;
+
+    assert_eq!(
+        query,
+        FullTextQuery::Match {
+            column: "text".to_string(),
+            terms: "paimon".to_string(),
+            operator: MatchOperator::And,
+            boost: 2.0,
+            fuzziness: Some(0),
+            max_expansions: 50,
+            prefix_length: 0,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn search_accepts_paimon_logical_column_name() -> anyhow::Result<()> {
+    let bytes = build_index()?;
+    let mut reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    let query = FullTextQuery::from_json(
+        r#"{"match":{"column":"content","query":"paimon","operator":"OR"}}"#,
+    )?;
+    let result = reader.search(query, 10)?;
+
+    assert_eq!(result.row_ids.len(), 2);
+    assert!(result.row_ids.contains(&10));
+    assert!(result.row_ids.contains(&12));
+    Ok(())
+}
+
+#[test]
+fn parse_paimon_boolean_query_json_forms() -> anyhow::Result<()> {
+    let query = FullTextQuery::from_json(
+        r#"{"boolean":{"must":[{"match":{"column":"text","terms":"paimon"}}],"must_not":[{"phrase":{"column":"text","query":"legacy"}}]}}"#,
+    )?;
+    let bytes = build_index()?;
+    let mut reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    let result = reader.search(query, 10)?;
+
+    assert_eq!(result.row_ids.len(), 2);
+    assert!(result.row_ids.contains(&10));
+    assert!(result.row_ids.contains(&12));
     Ok(())
 }
