@@ -1,26 +1,32 @@
+use crate::archive_directory::ArchiveDirectory;
 use crate::config::{FullTextIndexConfig, FullTextIndexMetadata};
 use crate::error::{FtIndexError, Result};
-use crate::io::{SeekRead, SeekWrite};
-use crate::query::{BooleanOccur, FullTextQuery, MatchOperator};
-use crate::storage::{
-    read_archive_files_with, read_header, write_envelope, ArchiveFileEntry, IndexHeader,
-};
+use crate::io::{FullTextReadMetrics, ReadMetrics, ReadRequest, SeekRead, SeekWrite};
+use crate::query::{BooleanOccur, MatchOperator, QuerySpec};
+use crate::storage::{read_header, write_envelope, ArchiveFileEntry, IndexHeader};
 use crate::tokenizer::{TokenizerConfig, TokenizerKind};
+use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use roaring::RoaringTreemap;
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tantivy::collector::{FilterCollector, TopDocs};
-use tantivy::directory::{Directory, RamDirectory};
 use tantivy::query::{
-    BooleanQuery, BoostQuery, EnableScoring, Explanation, Occur, Query, QueryParser, Scorer, Weight,
+    BooleanQuery, BoostQuery, ConstScorer, EmptyQuery, EnableScoring, Explanation, Occur, Query,
+    QueryParser, Scorer, TermQuery, Weight,
 };
 use tantivy::schema::{IndexRecordOption, NumericOptions, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{
-    AsciiFoldingFilter, LowerCaser, NgramTokenizer, RawTokenizer, RemoveLongFilter,
-    SimpleTokenizer, TextAnalyzer, WhitespaceTokenizer,
+    AsciiFoldingFilter, Language, LowerCaser, NgramTokenizer, RawTokenizer, RemoveLongFilter,
+    SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer, TokenStream, WhitespaceTokenizer,
 };
-use tantivy::{DocId, DocSet, Index, Score, SegmentReader, TantivyDocument, TERMINATED};
+use tantivy::{
+    DocId, DocSet, Index, Score, SegmentReader, SingleSegmentIndexWriter, TantivyDocument, Term,
+    TERMINATED,
+};
+use tantivy_fst::Automaton;
 use tantivy_jieba::JiebaTokenizer;
 use tempfile::TempDir;
 
@@ -32,12 +38,18 @@ pub struct FullTextSearchResult {
 
 pub struct FullTextIndexWriter {
     config: FullTextIndexConfig,
-    documents: Vec<(i64, String)>,
+    documents: Vec<FullTextDocument>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FullTextDocument {
+    pub row_id: i64,
+    pub fields: Vec<(String, String)>,
 }
 
 impl FullTextIndexWriter {
     pub fn new(config: FullTextIndexConfig) -> Result<Self> {
-        config.tokenizer.validate()?;
+        config.validate()?;
         Ok(Self {
             config,
             documents: Vec::new(),
@@ -45,12 +57,34 @@ impl FullTextIndexWriter {
     }
 
     pub fn add_document(&mut self, row_id: i64, text: impl Into<String>) -> Result<()> {
+        let text_field = self.config.default_text_field().to_string();
+        self.add_document_fields(row_id, [(text_field, text.into())])
+    }
+
+    pub fn add_document_fields<I, K, V>(&mut self, row_id: i64, fields: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
         if row_id < 0 {
             return Err(FtIndexError::InvalidStorage(format!(
                 "row id must be non-negative, got {row_id}"
             )));
         }
-        self.documents.push((row_id, text.into()));
+        let fields = fields
+            .into_iter()
+            .map(|(name, text)| (name.into(), text.into()))
+            .collect::<Vec<_>>();
+        if fields.is_empty() {
+            return Err(FtIndexError::InvalidStorage(
+                "document must contain at least one text field".to_string(),
+            ));
+        }
+        for (name, _) in &fields {
+            validate_indexed_field(&self.config, name)?;
+        }
+        self.documents.push(FullTextDocument { row_id, fields });
         Ok(())
     }
 
@@ -62,19 +96,25 @@ impl FullTextIndexWriter {
         let row_id_field = schema
             .get_field(&self.config.row_id_field)
             .map_err(|_| FtIndexError::InvalidStorage("missing row_id field".to_string()))?;
-        let text_field = schema
-            .get_field(&self.config.text_field)
-            .map_err(|_| FtIndexError::InvalidStorage("missing text field".to_string()))?;
+        let text_fields = text_field_map(&schema, &self.config)?;
 
         {
-            let mut index_writer = index.writer(50_000_000)?;
-            for (row_id, text) in &self.documents {
+            let mut index_writer =
+                SingleSegmentIndexWriter::<TantivyDocument>::new(index, 50_000_000)?;
+            for document in &self.documents {
                 let mut doc = TantivyDocument::new();
-                doc.add_u64(row_id_field, *row_id as u64);
-                doc.add_text(text_field, text);
+                doc.add_u64(row_id_field, document.row_id as u64);
+                for (name, text) in &document.fields {
+                    let text_field = text_fields.get(name).ok_or_else(|| {
+                        FtIndexError::InvalidStorage(format!(
+                            "document field '{name}' is not configured for this index"
+                        ))
+                    })?;
+                    doc.add_text(*text_field, text);
+                }
                 index_writer.add_document(doc)?;
             }
-            index_writer.commit()?;
+            index_writer.finalize()?;
         }
 
         let files = collect_index_files(temp_dir.path())?;
@@ -91,7 +131,6 @@ impl FullTextIndexWriter {
 
         let header = IndexHeader {
             metadata: FullTextIndexMetadata {
-                format_version: crate::storage::FORMAT_VERSION,
                 config: self.config.clone(),
                 document_count: self.documents.len() as u64,
                 tantivy_version: tantivy::version().to_string(),
@@ -103,43 +142,60 @@ impl FullTextIndexWriter {
 }
 
 pub struct FullTextIndexReader<R> {
-    _input: R,
+    _input: Arc<MeteredSeekRead<R>>,
     index: Index,
+    reader: Mutex<Option<tantivy::IndexReader>>,
+    read_metrics: Arc<ReadMetrics>,
     metadata: FullTextIndexMetadata,
 }
 
-impl<R: SeekRead> FullTextIndexReader<R> {
-    pub fn open(mut input: R) -> Result<Self> {
-        let (header, body_start) = read_header(&mut input)?;
-        let directory = RamDirectory::create();
-        read_archive_files_with(&mut input, body_start, &header.files, |name, data| {
-            directory.atomic_write(Path::new(name), data)?;
-            Ok(())
-        })?;
+impl<R: SeekRead + 'static> FullTextIndexReader<R> {
+    pub fn open(input: R) -> Result<Self> {
+        let read_metrics = Arc::new(ReadMetrics::default());
+        let input = MeteredSeekRead {
+            inner: input,
+            metrics: Arc::clone(&read_metrics),
+        };
+        let (header, body_start) = read_header(&input)?;
+        validate_tantivy_version(&header.metadata)?;
+        let input = Arc::new(input);
+        let directory = ArchiveDirectory::new_with_metrics(
+            Arc::clone(&input),
+            body_start,
+            &header.files,
+            Arc::clone(&read_metrics),
+        )?;
         let mut index = Index::open(directory)?;
         register_tokenizer(&mut index, &header.metadata.config.tokenizer)?;
         Ok(Self {
             _input: input,
             index,
+            reader: Mutex::new(None),
+            read_metrics,
             metadata: header.metadata,
         })
-    }
-
-    pub fn optimize_for_search(&mut self) -> Result<()> {
-        Ok(())
     }
 
     pub fn metadata(&self) -> &FullTextIndexMetadata {
         &self.metadata
     }
 
-    pub fn search(&mut self, query: FullTextQuery, limit: usize) -> Result<FullTextSearchResult> {
+    pub fn read_metrics(&self) -> FullTextReadMetrics {
+        self.read_metrics.snapshot()
+    }
+
+    pub fn prewarm(&self) -> Result<()> {
+        let _ = self.searcher()?;
+        Ok(())
+    }
+
+    pub fn search<Q: AsRef<str>>(&self, query: Q, limit: usize) -> Result<FullTextSearchResult> {
         self.search_with_filter(query, limit, None)
     }
 
-    pub fn search_with_roaring_filter(
-        &mut self,
-        query: FullTextQuery,
+    pub fn search_with_roaring_filter<Q: AsRef<str>>(
+        &self,
+        query: Q,
         limit: usize,
         roaring_filter_bytes: &[u8],
     ) -> Result<FullTextSearchResult> {
@@ -147,9 +203,9 @@ impl<R: SeekRead> FullTextIndexReader<R> {
         self.search_with_filter(query, limit, Some(filter))
     }
 
-    fn search_with_filter(
-        &mut self,
-        query: FullTextQuery,
+    fn search_with_filter<Q: AsRef<str>>(
+        &self,
+        query: Q,
         limit: usize,
         filter: Option<RoaringTreemap>,
     ) -> Result<FullTextSearchResult> {
@@ -158,8 +214,8 @@ impl<R: SeekRead> FullTextIndexReader<R> {
                 "search limit must be positive".to_string(),
             ));
         }
-        let reader = self.index.reader()?;
-        let searcher = reader.searcher();
+        let searcher = self.searcher()?;
+        let query = QuerySpec::from_json(query.as_ref())?;
         let tantivy_query = build_query(&self.index, &self.metadata.config, &query)?;
         let top_docs = if let Some(filter) = filter {
             let row_id_field = self.metadata.config.row_id_field.clone();
@@ -185,6 +241,39 @@ impl<R: SeekRead> FullTextIndexReader<R> {
         }
         Ok(FullTextSearchResult { row_ids, scores })
     }
+
+    fn searcher(&self) -> Result<tantivy::Searcher> {
+        let mut reader = self.reader.lock().map_err(|_| {
+            FtIndexError::InvalidStorage("Tantivy reader lock poisoned".to_string())
+        })?;
+        if reader.is_none() {
+            *reader = Some(self.index.reader()?);
+        }
+        Ok(reader.as_ref().expect("reader initialized").searcher())
+    }
+}
+
+struct MeteredSeekRead<R> {
+    inner: R,
+    metrics: Arc<ReadMetrics>,
+}
+
+impl<R: SeekRead> SeekRead for MeteredSeekRead<R> {
+    fn pread(&self, ranges: &mut [ReadRequest<'_>]) -> std::io::Result<()> {
+        self.metrics.record_pread(ranges);
+        self.inner.pread(ranges)
+    }
+}
+
+fn validate_tantivy_version(metadata: &FullTextIndexMetadata) -> Result<()> {
+    let runtime_version = tantivy::version().to_string();
+    if metadata.tantivy_version != runtime_version {
+        return Err(FtIndexError::InvalidStorage(format!(
+            "unsupported Tantivy index version {}, runtime uses {}",
+            metadata.tantivy_version, runtime_version
+        )));
+    }
+    Ok(())
 }
 
 fn decode_roaring_filter(bytes: &[u8]) -> Result<RoaringTreemap> {
@@ -210,16 +299,17 @@ fn build_schema(config: &FullTextIndexConfig) -> Schema {
     let indexing = TextFieldIndexing::default()
         .set_tokenizer(tokenizer_name)
         .set_index_option(index_option);
-    builder.add_text_field(
-        &config.text_field,
-        TextOptions::default().set_indexing_options(indexing),
-    );
+    for field in config.indexed_text_fields() {
+        builder.add_text_field(
+            field,
+            TextOptions::default().set_indexing_options(indexing.clone()),
+        );
+    }
     builder.build()
 }
 
 fn tokenizer_name(config: &TokenizerConfig) -> &'static str {
     match config.tokenizer {
-        TokenizerKind::Default if !needs_custom_default(config) => "default",
         TokenizerKind::Default | TokenizerKind::Simple => "paimon_custom",
         TokenizerKind::Whitespace => "paimon_custom",
         TokenizerKind::Raw => "paimon_custom",
@@ -228,36 +318,15 @@ fn tokenizer_name(config: &TokenizerConfig) -> &'static str {
     }
 }
 
-fn needs_custom_default(config: &TokenizerConfig) -> bool {
-    !config.lower_case
-        || config.max_token_length != 40
-        || config.ascii_folding
-        || config.stem
-        || config.remove_stop_words
-        || !config.stop_words.is_empty()
-}
-
 fn register_tokenizer(index: &mut Index, config: &TokenizerConfig) -> Result<()> {
-    match config.tokenizer {
-        TokenizerKind::Default if !needs_custom_default(config) => Ok(()),
-        _ => {
-            let analyzer = build_text_analyzer(config)?;
-            index
-                .tokenizers()
-                .register(tokenizer_name(config), analyzer);
-            Ok(())
-        }
-    }
+    let analyzer = build_text_analyzer(config)?;
+    index
+        .tokenizers()
+        .register(tokenizer_name(config), analyzer);
+    Ok(())
 }
 
 fn build_text_analyzer(config: &TokenizerConfig) -> Result<TextAnalyzer> {
-    if config.stem || config.remove_stop_words || !config.stop_words.is_empty() {
-        return Err(FtIndexError::InvalidOption {
-            key: "tokenizer filters".to_string(),
-            message: "stemming and stop-word filters are not enabled in this first implementation"
-                .to_string(),
-        });
-    }
     let mut builder = match config.tokenizer {
         TokenizerKind::Default | TokenizerKind::Simple => {
             TextAnalyzer::builder(SimpleTokenizer::default()).dynamic()
@@ -288,10 +357,86 @@ fn build_text_analyzer(config: &TokenizerConfig) -> Result<TextAnalyzer> {
     if config.lower_case {
         builder = builder.filter_dynamic(LowerCaser);
     }
+    if config.stem {
+        builder = builder.filter_dynamic(Stemmer::new(parse_language(&config.language)?));
+    }
+    if config.remove_stop_words {
+        let language = parse_language(&config.language)?;
+        if let Some(filter) = StopWordFilter::new(language) {
+            builder = builder.filter_dynamic(filter);
+        } else if config.stop_words.is_empty() {
+            return Err(FtIndexError::InvalidOption {
+                key: "language".to_string(),
+                message: format!(
+                    "removing stop words for language '{}' is not supported",
+                    config.language
+                ),
+            });
+        }
+        if !config.stop_words.is_empty() {
+            builder = builder.filter_dynamic(StopWordFilter::remove(config.stop_words.clone()));
+        }
+    }
     if config.ascii_folding {
         builder = builder.filter_dynamic(AsciiFoldingFilter);
     }
     Ok(builder.build())
+}
+
+fn parse_language(language: &str) -> Result<Language> {
+    match language.trim().to_lowercase().as_str() {
+        "arabic" => Ok(Language::Arabic),
+        "danish" => Ok(Language::Danish),
+        "dutch" => Ok(Language::Dutch),
+        "english" | "en" => Ok(Language::English),
+        "finnish" => Ok(Language::Finnish),
+        "french" | "fr" => Ok(Language::French),
+        "german" | "de" => Ok(Language::German),
+        "greek" => Ok(Language::Greek),
+        "hungarian" => Ok(Language::Hungarian),
+        "italian" | "it" => Ok(Language::Italian),
+        "norwegian" => Ok(Language::Norwegian),
+        "portuguese" | "pt" => Ok(Language::Portuguese),
+        "romanian" => Ok(Language::Romanian),
+        "russian" | "ru" => Ok(Language::Russian),
+        "spanish" | "es" => Ok(Language::Spanish),
+        "swedish" => Ok(Language::Swedish),
+        "tamil" => Ok(Language::Tamil),
+        "turkish" => Ok(Language::Turkish),
+        other => Err(FtIndexError::InvalidOption {
+            key: "language".to_string(),
+            message: format!("unsupported tokenizer language '{other}'"),
+        }),
+    }
+}
+
+fn text_field_map(
+    schema: &Schema,
+    config: &FullTextIndexConfig,
+) -> Result<HashMap<String, tantivy::schema::Field>> {
+    let mut fields = HashMap::new();
+    for name in config.indexed_text_fields() {
+        let field = schema
+            .get_field(name)
+            .map_err(|_| FtIndexError::InvalidStorage(format!("missing text field '{name}'")))?;
+        fields.insert(name.to_string(), field);
+    }
+    Ok(fields)
+}
+
+fn validate_indexed_field(config: &FullTextIndexConfig, field: &str) -> Result<()> {
+    if field.trim().is_empty() {
+        return Err(FtIndexError::InvalidStorage(
+            "document field name must not be empty".to_string(),
+        ));
+    }
+    if config.indexed_text_fields().contains(&field) {
+        Ok(())
+    } else {
+        Err(FtIndexError::InvalidStorage(format!(
+            "document field '{field}' is not configured for this index"
+        )))
+    }
 }
 
 fn collect_index_files(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
@@ -321,10 +466,10 @@ fn collect_index_files(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
 fn build_query(
     index: &Index,
     config: &FullTextIndexConfig,
-    query: &FullTextQuery,
+    query: &QuerySpec,
 ) -> Result<Box<dyn Query>> {
     match query {
-        FullTextQuery::Match {
+        QuerySpec::Match {
             column,
             terms,
             operator,
@@ -333,40 +478,73 @@ fn build_query(
             max_expansions,
             prefix_length,
         } => {
-            validate_column(config, column)?;
             validate_match_options(*fuzziness, *max_expansions, *prefix_length)?;
-            let text_field = index
-                .schema()
-                .get_field(&config.text_field)
-                .map_err(|_| FtIndexError::InvalidQuery("missing text field".to_string()))?;
-            let mut parser = QueryParser::for_index(index, vec![text_field]);
-            if *operator == MatchOperator::And {
-                parser.set_conjunction_by_default();
+            let fields = resolve_match_fields(index, config, column.as_deref())?;
+            let mut children = Vec::with_capacity(fields.len());
+            let options = FieldMatchOptions {
+                operator: *operator,
+                boost: *boost,
+                fuzziness: *fuzziness,
+                max_expansions: *max_expansions,
+                prefix_length: *prefix_length,
+            };
+            for field in fields {
+                children.push((
+                    Occur::Should,
+                    build_field_match_query(index, config, field, terms, options)?,
+                ));
             }
-            let parsed = parser
-                .parse_query(terms)
-                .map_err(|e| FtIndexError::InvalidQuery(e.to_string()))?;
-            if (*boost - 1.0).abs() > f32::EPSILON {
-                Ok(Box::new(BoostQuery::new(parsed, *boost)))
+            if children.len() == 1 {
+                Ok(children.remove(0).1)
             } else {
-                Ok(parsed)
+                Ok(Box::new(BooleanQuery::new(children)))
             }
         }
-        FullTextQuery::MatchPhrase {
+        QuerySpec::MultiMatch {
+            terms,
+            columns,
+            boosts,
+            operator,
+            fuzziness,
+            max_expansions,
+            prefix_length,
+        } => {
+            validate_multi_match_options(
+                columns,
+                boosts,
+                *fuzziness,
+                *max_expansions,
+                *prefix_length,
+            )?;
+            let mut children = Vec::with_capacity(columns.len());
+            for (idx, column) in columns.iter().enumerate() {
+                let boost = boosts.get(idx).copied().unwrap_or(1.0);
+                let field = resolve_text_field(index, config, Some(column))?;
+                let options = FieldMatchOptions {
+                    operator: *operator,
+                    boost,
+                    fuzziness: *fuzziness,
+                    max_expansions: *max_expansions,
+                    prefix_length: *prefix_length,
+                };
+                children.push((
+                    Occur::Should,
+                    build_field_match_query(index, config, field, terms, options)?,
+                ));
+            }
+            Ok(Box::new(BooleanQuery::new(children)))
+        }
+        QuerySpec::MatchPhrase {
             column,
             terms,
             slop,
         } => {
-            validate_column(config, column)?;
             if !config.tokenizer.with_position {
                 return Err(FtIndexError::InvalidQuery(
                     "phrase query requires positions".to_string(),
                 ));
             }
-            let text_field = index
-                .schema()
-                .get_field(&config.text_field)
-                .map_err(|_| FtIndexError::InvalidQuery("missing text field".to_string()))?;
+            let text_field = resolve_text_field(index, config, column.as_deref())?;
             let parser = QueryParser::for_index(index, vec![text_field]);
             let escaped = terms.replace('\\', "\\\\").replace('"', "\\\"");
             let query_text = if *slop == 0 {
@@ -378,7 +556,7 @@ fn build_query(
                 .parse_query(&query_text)
                 .map_err(|e| FtIndexError::InvalidQuery(e.to_string()))
         }
-        FullTextQuery::Boolean {
+        QuerySpec::Boolean {
             should,
             must,
             must_not,
@@ -387,6 +565,16 @@ fn build_query(
             if should.is_empty() && must.is_empty() && must_not.is_empty() && queries.is_empty() {
                 return Err(FtIndexError::InvalidQuery(
                     "boolean query must contain at least one clause".to_string(),
+                ));
+            }
+            let has_positive_clause = !should.is_empty()
+                || !must.is_empty()
+                || queries
+                    .iter()
+                    .any(|(occur, _)| matches!(occur, BooleanOccur::Should | BooleanOccur::Must));
+            if !has_positive_clause {
+                return Err(FtIndexError::InvalidQuery(
+                    "boolean query must contain at least one should or must clause".to_string(),
                 ));
             }
             let mut children =
@@ -410,7 +598,7 @@ fn build_query(
             }
             Ok(Box::new(BooleanQuery::new(children)))
         }
-        FullTextQuery::Boost {
+        QuerySpec::Boost {
             positive,
             negative,
             negative_boost,
@@ -430,22 +618,205 @@ fn validate_match_options(
     max_expansions: usize,
     prefix_length: u32,
 ) -> Result<()> {
-    if fuzziness.unwrap_or(0) != 0 {
+    if fuzziness.unwrap_or(0) > 2 {
         return Err(FtIndexError::InvalidQuery(
-            "match query fuzziness is not supported by paimon-full-text yet".to_string(),
+            "match query fuzziness must be auto/null or a value in [0, 2]".to_string(),
         ));
     }
-    if max_expansions != 50 {
+    if max_expansions == 0 {
         return Err(FtIndexError::InvalidQuery(
-            "match query max_expansions is not supported by paimon-full-text yet".to_string(),
+            "match query max_expansions must be positive".to_string(),
         ));
     }
-    if prefix_length != 0 {
+    let _ = prefix_length;
+    Ok(())
+}
+
+fn validate_multi_match_options(
+    columns: &[String],
+    boosts: &[f32],
+    fuzziness: Option<u8>,
+    max_expansions: usize,
+    prefix_length: u32,
+) -> Result<()> {
+    if columns.is_empty() {
         return Err(FtIndexError::InvalidQuery(
-            "match query prefix_length is not supported by paimon-full-text yet".to_string(),
+            "multi_match query must contain at least one column".to_string(),
         ));
+    }
+    if !boosts.is_empty() && boosts.len() != columns.len() {
+        return Err(FtIndexError::InvalidQuery(format!(
+            "multi_match boosts length {} does not match columns length {}",
+            boosts.len(),
+            columns.len()
+        )));
+    }
+    for boost in boosts {
+        validate_boost(*boost)?;
+    }
+    validate_match_options(fuzziness, max_expansions, prefix_length)
+}
+
+fn validate_boost(boost: f32) -> Result<()> {
+    if !boost.is_finite() || boost <= 0.0 {
+        return Err(FtIndexError::InvalidQuery(format!(
+            "boost must be a finite positive value, got {boost}"
+        )));
     }
     Ok(())
+}
+
+fn resolve_text_field(
+    index: &Index,
+    config: &FullTextIndexConfig,
+    column: Option<&str>,
+) -> Result<tantivy::schema::Field> {
+    let column = match column.map(str::trim).filter(|column| !column.is_empty()) {
+        Some(column) => column,
+        None => {
+            let fields = config.indexed_text_fields();
+            if fields.len() == 1 {
+                fields[0]
+            } else {
+                return Err(FtIndexError::InvalidQuery(
+                    "full-text query column must be set for multi-field indexes".to_string(),
+                ));
+            }
+        }
+    };
+    if !config.indexed_text_fields().contains(&column) {
+        return Err(FtIndexError::InvalidQuery(format!(
+            "full-text query column '{column}' is not configured for this index"
+        )));
+    }
+    index
+        .schema()
+        .get_field(column)
+        .map_err(|_| FtIndexError::InvalidQuery(format!("missing text field '{column}'")))
+}
+
+fn resolve_match_fields(
+    index: &Index,
+    config: &FullTextIndexConfig,
+    column: Option<&str>,
+) -> Result<Vec<tantivy::schema::Field>> {
+    if column
+        .map(str::trim)
+        .filter(|column| !column.is_empty())
+        .is_some()
+    {
+        return Ok(vec![resolve_text_field(index, config, column)?]);
+    }
+    config
+        .indexed_text_fields()
+        .into_iter()
+        .map(|field| resolve_text_field(index, config, Some(field)))
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct FieldMatchOptions {
+    operator: MatchOperator,
+    boost: f32,
+    fuzziness: Option<u8>,
+    max_expansions: usize,
+    prefix_length: u32,
+}
+
+fn build_field_match_query(
+    index: &Index,
+    config: &FullTextIndexConfig,
+    field: tantivy::schema::Field,
+    terms: &str,
+    options: FieldMatchOptions,
+) -> Result<Box<dyn Query>> {
+    validate_boost(options.boost)?;
+    let tokens = analyze_terms(index, config, terms)?;
+    let mut query = if tokens.is_empty() {
+        Box::new(EmptyQuery) as Box<dyn Query>
+    } else if tokens.len() == 1 {
+        build_token_query(
+            field,
+            &tokens[0],
+            options.fuzziness,
+            options.max_expansions,
+            options.prefix_length,
+        )?
+    } else {
+        let occur = match options.operator {
+            MatchOperator::Or => Occur::Should,
+            MatchOperator::And => Occur::Must,
+        };
+        let mut children = Vec::with_capacity(tokens.len());
+        for token in tokens {
+            children.push((
+                occur,
+                build_token_query(
+                    field,
+                    &token,
+                    options.fuzziness,
+                    options.max_expansions,
+                    options.prefix_length,
+                )?,
+            ));
+        }
+        Box::new(BooleanQuery::new(children)) as Box<dyn Query>
+    };
+    if (options.boost - 1.0).abs() > f32::EPSILON {
+        query = Box::new(BoostQuery::new(query, options.boost));
+    }
+    Ok(query)
+}
+
+fn analyze_terms(index: &Index, config: &FullTextIndexConfig, terms: &str) -> Result<Vec<String>> {
+    let tokenizer_name = tokenizer_name(&config.tokenizer);
+    let mut analyzer = index.tokenizers().get(tokenizer_name).ok_or_else(|| {
+        FtIndexError::InvalidQuery(format!("tokenizer '{tokenizer_name}' is not registered"))
+    })?;
+    let mut tokens = Vec::new();
+    let mut token_stream = analyzer.token_stream(terms);
+    token_stream.process(&mut |token| tokens.push(token.text.clone()));
+    Ok(tokens)
+}
+
+fn build_token_query(
+    field: tantivy::schema::Field,
+    token: &str,
+    fuzziness: Option<u8>,
+    max_expansions: usize,
+    prefix_length: u32,
+) -> Result<Box<dyn Query>> {
+    let fuzziness = fuzziness.unwrap_or_else(|| auto_fuzziness(token));
+    if fuzziness == 0 {
+        return Ok(Box::new(TermQuery::new(
+            Term::from_field_text(field, token),
+            IndexRecordOption::WithFreqs,
+        )));
+    }
+    if fuzziness > 2 {
+        return Err(FtIndexError::InvalidQuery(
+            "match query fuzziness must be auto/null or a value in [0, 2]".to_string(),
+        ));
+    }
+    let term = Term::from_field_text(field, token);
+    let prefix = token
+        .chars()
+        .take(prefix_length as usize)
+        .collect::<String>();
+    Ok(Box::new(CappedFuzzyTermQuery::new(
+        term,
+        fuzziness,
+        prefix,
+        max_expansions,
+    )))
+}
+
+fn auto_fuzziness(token: &str) -> u8 {
+    match token.chars().count() {
+        0..=2 => 0,
+        3..=5 => 1,
+        _ => 2,
+    }
 }
 
 fn validate_negative_boost(negative_boost: f32) -> Result<()> {
@@ -602,12 +973,191 @@ fn matches_doc(docset: &mut dyn DocSet, doc: DocId) -> bool {
     }
 }
 
-fn validate_column(_config: &FullTextIndexConfig, column: &str) -> Result<()> {
-    if !column.trim().is_empty() {
-        Ok(())
-    } else {
-        Err(FtIndexError::InvalidQuery(
-            "full-text query column must not be empty".to_string(),
-        ))
+#[derive(Clone)]
+struct CappedFuzzyTermQuery {
+    term: Term,
+    distance: u8,
+    prefix: String,
+    max_expansions: usize,
+}
+
+impl CappedFuzzyTermQuery {
+    fn new(term: Term, distance: u8, prefix: String, max_expansions: usize) -> Self {
+        Self {
+            term,
+            distance,
+            prefix,
+            max_expansions,
+        }
+    }
+}
+
+impl fmt::Debug for CappedFuzzyTermQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "CappedFuzzyTermQuery(term={:?}, distance={}, prefix={:?}, max_expansions={})",
+            self.term, self.distance, self.prefix, self.max_expansions
+        )
+    }
+}
+
+impl Query for CappedFuzzyTermQuery {
+    fn weight(&self, _enable_scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        let term_value = self.term.value();
+        let term_text = term_value.as_str().ok_or_else(|| {
+            tantivy::TantivyError::InvalidArgument("fuzzy query requires a string term".to_string())
+        })?;
+        let builder = LevenshteinAutomatonBuilder::new(self.distance, true);
+        let automaton = PrefixedDfaAutomaton::new(
+            builder.build_dfa(term_text),
+            self.prefix.as_bytes().to_vec(),
+        );
+        Ok(Box::new(CappedAutomatonWeight {
+            field: self.term.field(),
+            automaton,
+            max_expansions: self.max_expansions,
+        }))
+    }
+
+    fn query_terms<'a>(&'a self, visitor: &mut dyn FnMut(&'a Term, bool)) {
+        visitor(&self.term, false);
+    }
+}
+
+struct CappedAutomatonWeight<A> {
+    field: tantivy::schema::Field,
+    automaton: A,
+    max_expansions: usize,
+}
+
+impl<A> Weight for CappedAutomatonWeight<A>
+where
+    A: Automaton + Send + Sync + 'static,
+    A::State: Clone,
+{
+    fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
+        let inverted_index = reader.inverted_index(self.field)?;
+        let term_dict = inverted_index.terms();
+        let mut term_stream = term_dict.search(&self.automaton).into_stream()?;
+        let mut docs = Vec::new();
+        let mut expansions = 0usize;
+        while expansions < self.max_expansions && term_stream.advance() {
+            expansions += 1;
+            let term_info = term_stream.value();
+            let mut block_segment_postings = inverted_index
+                .read_block_postings_from_terminfo(term_info, IndexRecordOption::Basic)?;
+            loop {
+                let block_docs = block_segment_postings.docs();
+                if block_docs.is_empty() {
+                    break;
+                }
+                docs.extend_from_slice(block_docs);
+                block_segment_postings.advance();
+            }
+        }
+        docs.sort_unstable();
+        docs.dedup();
+        Ok(Box::new(ConstScorer::new(SortedDocSet::new(docs), boost)))
+    }
+
+    fn explain(&self, reader: &SegmentReader, doc: DocId) -> tantivy::Result<Explanation> {
+        let mut scorer = self.scorer(reader, 1.0)?;
+        if scorer.seek(doc) == doc {
+            Ok(Explanation::new("CappedAutomatonScorer", 1.0))
+        } else {
+            Err(tantivy::TantivyError::InvalidArgument(
+                "Document does not match fuzzy query".to_string(),
+            ))
+        }
+    }
+}
+
+struct SortedDocSet {
+    docs: Vec<DocId>,
+    cursor: usize,
+    doc: DocId,
+}
+
+impl SortedDocSet {
+    fn new(docs: Vec<DocId>) -> Self {
+        let doc = docs.first().copied().unwrap_or(TERMINATED);
+        Self {
+            docs,
+            cursor: 0,
+            doc,
+        }
+    }
+}
+
+impl DocSet for SortedDocSet {
+    fn advance(&mut self) -> DocId {
+        if self.doc == TERMINATED {
+            return TERMINATED;
+        }
+        self.cursor += 1;
+        self.doc = self.docs.get(self.cursor).copied().unwrap_or(TERMINATED);
+        self.doc
+    }
+
+    fn seek(&mut self, target: DocId) -> DocId {
+        if self.doc >= target {
+            return self.doc;
+        }
+        let relative_cursor = self.docs[self.cursor..].partition_point(|doc| *doc < target);
+        self.cursor += relative_cursor;
+        self.doc = self.docs.get(self.cursor).copied().unwrap_or(TERMINATED);
+        self.doc
+    }
+
+    fn doc(&self) -> DocId {
+        self.doc
+    }
+
+    fn size_hint(&self) -> u32 {
+        if self.doc == TERMINATED {
+            0
+        } else {
+            (self.docs.len() - self.cursor) as u32
+        }
+    }
+}
+
+struct PrefixedDfaAutomaton {
+    dfa: DFA,
+    prefix: Vec<u8>,
+}
+
+impl PrefixedDfaAutomaton {
+    fn new(dfa: DFA, prefix: Vec<u8>) -> Self {
+        Self { dfa, prefix }
+    }
+}
+
+impl Automaton for PrefixedDfaAutomaton {
+    type State = (u32, Option<usize>);
+
+    fn start(&self) -> Self::State {
+        (self.dfa.initial_state(), Some(0))
+    }
+
+    fn is_match(&self, state: &Self::State) -> bool {
+        matches!(self.dfa.distance(state.0), Distance::Exact(_))
+            && matches!(state.1, Some(pos) if pos >= self.prefix.len())
+    }
+
+    fn can_match(&self, state: &Self::State) -> bool {
+        state.0 != SINK_STATE && state.1.is_some()
+    }
+
+    fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
+        let dfa_state = self.dfa.transition(state.0, byte);
+        let prefix_state = match state.1 {
+            None => None,
+            Some(pos) if pos >= self.prefix.len() => Some(pos),
+            Some(pos) if self.prefix[pos] == byte => Some(pos + 1),
+            Some(_) => None,
+        };
+        (dfa_state, prefix_state)
     }
 }

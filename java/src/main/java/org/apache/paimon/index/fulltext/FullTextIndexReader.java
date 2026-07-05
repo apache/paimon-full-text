@@ -11,17 +11,17 @@ public final class FullTextIndexReader implements AutoCloseable {
         this.nativePtr = FullTextNative.openReader(input);
     }
 
-    public FullTextSearchResult search(FullTextQuery query, int limit) {
+    public FullTextSearchResult search(String query, int limit) {
         if (query == null) {
             throw new NullPointerException("query");
         }
         if (limit <= 0) {
             throw new IllegalArgumentException("search limit must be positive");
         }
-        return FullTextNative.searchJson(requireOpen(), query.toJson(), limit);
+        return FullTextNative.search(requireOpen(), query, limit);
     }
 
-    public FullTextSearchResult search(FullTextQuery query, int limit, byte[] roaringFilter) {
+    public FullTextSearchResult search(String query, int limit, byte[] roaringFilter) {
         if (query == null) {
             throw new NullPointerException("query");
         }
@@ -31,8 +31,15 @@ public final class FullTextIndexReader implements AutoCloseable {
         if (roaringFilter == null) {
             throw new NullPointerException("roaringFilter");
         }
-        return FullTextNative.searchJsonWithRoaringFilter(
-                requireOpen(), query.toJson(), limit, roaringFilter);
+        return FullTextNative.searchWithRoaringFilter(requireOpen(), query, limit, roaringFilter);
+    }
+
+    public FullTextReadMetrics readMetrics() {
+        return FullTextNative.readMetrics(requireOpen());
+    }
+
+    public void prewarm() {
+        FullTextNative.prewarm(requireOpen());
     }
 
     @Override

@@ -6,6 +6,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
@@ -29,36 +31,72 @@ public class FullTextNativeRoundTripTest {
         }
 
         byte[] indexBytes = output.toByteArray();
-        AtomicInteger maxBatchSize = new AtomicInteger();
+        AtomicInteger bytesRead = new AtomicInteger();
         FullTextIndexInput input =
                 new FullTextIndexInput() {
                     @Override
-                    public void readAt(long position, byte[] buffer, int offset, int length)
+                    public void pread(long position, byte[] buffer, int offset, int length)
                             throws IOException {
-                        readAtBytes(indexBytes, position, buffer, offset, length);
-                    }
-
-                    @Override
-                    public void pread(long[] positions, byte[][] buffers) throws IOException {
-                        maxBatchSize.updateAndGet(current -> Math.max(current, positions.length));
-                        FullTextIndexInput.super.pread(positions, buffers);
+                        bytesRead.addAndGet(length);
+                        preadBytes(indexBytes, position, buffer, offset, length);
                     }
                 };
 
         try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
-            FullTextSearchResult result = reader.search(FullTextQuery.match("paimon", "text"), 10);
+            int bytesReadAtOpen = bytesRead.get();
+            FullTextReadMetrics metrics = reader.readMetrics();
+            assertTrue(metrics.preadCalls() >= 2);
+            assertTrue(metrics.preadBytes() > 16);
+            reader.prewarm();
+            FullTextReadMetrics afterPrewarm = reader.readMetrics();
+            assertTrue(afterPrewarm.preadCalls() > metrics.preadCalls());
+            FullTextSearchResult result = reader.search(matchQuery("paimon", "text"), 10);
+            FullTextReadMetrics afterSearch = reader.readMetrics();
 
-            assertTrue(maxBatchSize.get() > 1);
+            assertTrue(bytesReadAtOpen < indexBytes.length);
             assertEquals(1, result.size());
             assertEquals(10L, result.rowIds()[0]);
             assertTrue(result.scores()[0] > 0.0f);
+            assertTrue(afterSearch.preadCalls() >= afterPrewarm.preadCalls());
+            assertTrue(afterSearch.cacheMisses() >= metrics.cacheMisses());
 
             try {
-                reader.search(FullTextQuery.match("paimon", "text"), 0);
+                reader.search(matchQuery("paimon", "text"), 0);
                 fail("Expected non-positive search limit to fail");
             } catch (IllegalArgumentException expected) {
                 assertEquals("search limit must be positive", expected.getMessage());
             }
+        }
+    }
+
+    @Test
+    public void testJavaNativeMultiFieldRoundTrip() throws Exception {
+        assumeTrue(
+                "PAIMON_FTINDEX_JNI_LIB_PATH must point to the built JNI library",
+                nativeLibraryConfigured());
+
+        Map<String, String> options = Collections.singletonMap("text-fields", "title,body");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (FullTextIndexWriter writer = FullTextIndexWriter.create(options)) {
+            Map<String, String> fields = new LinkedHashMap<>();
+            fields.put("title", "Apache Paimon");
+            fields.put("body", "lake storage");
+            writer.addDocument(20L, fields);
+            writer.writeIndex(output::write);
+        }
+
+        byte[] indexBytes = output.toByteArray();
+        FullTextIndexInput input =
+                (position, buffer, offset, length) ->
+                        preadBytes(indexBytes, position, buffer, offset, length);
+
+        try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
+            FullTextSearchResult result =
+                    reader.search("{\"match\":{\"query\":\"paimon\"}}", 10);
+
+            assertEquals(1, result.size());
+            assertEquals(20L, result.rowIds()[0]);
+            assertTrue(result.scores()[0] > 0.0f);
         }
     }
 
@@ -67,7 +105,11 @@ public class FullTextNativeRoundTripTest {
         return path != null && !path.isEmpty() && new File(path).isFile();
     }
 
-    private static void readAtBytes(
+    private static String matchQuery(String terms, String column) {
+        return "{\"match\":{\"query\":\"" + terms + "\",\"column\":\"" + column + "\"}}";
+    }
+
+    private static void preadBytes(
             byte[] source, long position, byte[] buffer, int offset, int length) throws IOException {
         long end = position + length;
         if (position < 0 || end > source.length || end < position) {

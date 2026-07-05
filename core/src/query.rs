@@ -3,7 +3,7 @@ use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
-pub enum MatchOperator {
+pub(crate) enum MatchOperator {
     #[default]
     Or,
     And,
@@ -26,7 +26,7 @@ impl<'de> Deserialize<'de> for MatchOperator {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-pub enum BooleanOccur {
+pub(crate) enum BooleanOccur {
     Should,
     Must,
     MustNot,
@@ -51,9 +51,10 @@ impl<'de> Deserialize<'de> for BooleanOccur {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum FullTextQuery {
+pub(crate) enum QuerySpec {
     Match {
-        column: String,
+        #[serde(default)]
+        column: Option<String>,
         #[serde(alias = "query")]
         terms: String,
         #[serde(default)]
@@ -70,9 +71,28 @@ pub enum FullTextQuery {
         #[serde(default, alias = "prefixLength")]
         prefix_length: u32,
     },
+    MultiMatch {
+        #[serde(alias = "query")]
+        terms: String,
+        columns: Vec<String>,
+        #[serde(default, alias = "boost")]
+        boosts: Vec<f32>,
+        #[serde(default)]
+        operator: MatchOperator,
+        #[serde(
+            default = "default_fuzziness",
+            deserialize_with = "deserialize_fuzziness"
+        )]
+        fuzziness: Option<u8>,
+        #[serde(default = "default_max_expansions", alias = "maxExpansions")]
+        max_expansions: usize,
+        #[serde(default, alias = "prefixLength")]
+        prefix_length: u32,
+    },
     #[serde(alias = "phrase")]
     MatchPhrase {
-        column: String,
+        #[serde(default)]
+        column: Option<String>,
         #[serde(alias = "query")]
         terms: String,
         #[serde(default)]
@@ -80,17 +100,17 @@ pub enum FullTextQuery {
     },
     Boolean {
         #[serde(default)]
-        should: Vec<FullTextQuery>,
+        should: Vec<QuerySpec>,
         #[serde(default)]
-        must: Vec<FullTextQuery>,
+        must: Vec<QuerySpec>,
         #[serde(default)]
-        must_not: Vec<FullTextQuery>,
+        must_not: Vec<QuerySpec>,
         #[serde(default)]
-        queries: Vec<(BooleanOccur, FullTextQuery)>,
+        queries: Vec<(BooleanOccur, QuerySpec)>,
     },
     Boost {
-        positive: Box<FullTextQuery>,
-        negative: Box<FullTextQuery>,
+        positive: Box<QuerySpec>,
+        negative: Box<QuerySpec>,
         #[serde(default = "default_negative_boost")]
         negative_boost: f32,
     },
@@ -129,46 +149,8 @@ where
     }
 }
 
-impl FullTextQuery {
-    pub fn match_query(terms: impl Into<String>, column: impl Into<String>) -> Self {
-        Self::Match {
-            column: column.into(),
-            terms: terms.into(),
-            operator: MatchOperator::Or,
-            boost: 1.0,
-            fuzziness: Some(0),
-            max_expansions: 50,
-            prefix_length: 0,
-        }
-    }
-
-    pub fn phrase(terms: impl Into<String>, column: impl Into<String>) -> Self {
-        Self::MatchPhrase {
-            column: column.into(),
-            terms: terms.into(),
-            slop: 0,
-        }
-    }
-
-    pub fn operator_and(mut self) -> Self {
-        if let Self::Match { operator, .. } = &mut self {
-            *operator = MatchOperator::And;
-        }
-        self
-    }
-
-    pub fn operator_or(mut self) -> Self {
-        if let Self::Match { operator, .. } = &mut self {
-            *operator = MatchOperator::Or;
-        }
-        self
-    }
-
-    pub fn to_json(&self) -> Result<String> {
-        serde_json::to_string(self).map_err(FtIndexError::from)
-    }
-
-    pub fn from_json(json: &str) -> Result<Self> {
+impl QuerySpec {
+    pub(crate) fn from_json(json: &str) -> Result<Self> {
         serde_json::from_str(json).map_err(FtIndexError::from)
     }
 }

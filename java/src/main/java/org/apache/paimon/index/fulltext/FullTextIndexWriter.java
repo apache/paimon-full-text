@@ -28,6 +28,21 @@ public final class FullTextIndexWriter implements AutoCloseable {
         FullTextNative.addDocument(requireOpen(), rowId, text);
     }
 
+    public void addDocument(long rowId, Map<String, String> fields) {
+        if (fields == null) {
+            throw new NullPointerException("fields");
+        }
+        String[] fieldNames = new String[fields.size()];
+        String[] texts = new String[fields.size()];
+        int i = 0;
+        for (Map.Entry<String, String> entry : fields.entrySet()) {
+            fieldNames[i] = entry.getKey();
+            texts[i] = entry.getValue();
+            i++;
+        }
+        FullTextNative.addDocumentFields(requireOpen(), rowId, fieldNames, texts);
+    }
+
     public void writeIndex(FullTextIndexOutput output) {
         if (output == null) {
             throw new NullPointerException("output");

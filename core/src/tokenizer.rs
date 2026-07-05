@@ -15,6 +15,7 @@ pub enum TokenizerKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct TokenizerConfig {
     pub tokenizer: TokenizerKind,
     pub ngram_min_gram: usize,
@@ -36,19 +37,19 @@ impl Default for TokenizerConfig {
     fn default() -> Self {
         Self {
             tokenizer: TokenizerKind::Default,
-            ngram_min_gram: 2,
-            ngram_max_gram: 2,
+            ngram_min_gram: 3,
+            ngram_max_gram: 3,
             ngram_prefix_only: false,
             jieba_search_mode: true,
             jieba_ordinal_position: true,
             lower_case: true,
             max_token_length: 40,
-            ascii_folding: false,
-            stem: false,
+            ascii_folding: true,
+            stem: true,
             language: "english".to_string(),
-            remove_stop_words: false,
+            remove_stop_words: true,
             stop_words: Vec::new(),
-            with_position: true,
+            with_position: false,
         }
     }
 }
@@ -61,7 +62,8 @@ impl TokenizerConfig {
                 .strip_prefix("fulltext.")
                 .or_else(|| raw_key.strip_prefix("tantivy."))
                 .unwrap_or(raw_key.as_str());
-            match key {
+            let key = normalize_option_key(key);
+            match key.as_str() {
                 "tokenizer" => {
                     config.tokenizer = parse_tokenizer(value)?;
                 }
@@ -129,12 +131,16 @@ impl TokenizerConfig {
         if self.max_token_length == 0 {
             return invalid("max-token-length", "must be positive");
         }
+        if !self.remove_stop_words && !self.stop_words.is_empty() {
+            return invalid("stop-words", "requires remove-stop-words=true");
+        }
         Ok(())
     }
 }
 
 fn parse_tokenizer(value: &str) -> Result<TokenizerKind> {
-    match value.trim().to_lowercase().as_str() {
+    let value = value.trim().to_lowercase();
+    match value.as_str() {
         "default" => Ok(TokenizerKind::Default),
         "simple" => Ok(TokenizerKind::Simple),
         "whitespace" => Ok(TokenizerKind::Whitespace),
@@ -148,22 +154,28 @@ fn parse_tokenizer(value: &str) -> Result<TokenizerKind> {
     }
 }
 
-fn parse_usize(key: &str, value: &str) -> Result<usize> {
+fn normalize_option_key(key: &str) -> String {
+    key.trim().to_lowercase()
+}
+
+fn parse_usize(key: impl Into<String>, value: &str) -> Result<usize> {
+    let key = key.into();
     value
         .trim()
         .parse()
         .map_err(|_| FtIndexError::InvalidOption {
-            key: key.to_string(),
+            key,
             message: format!("expected unsigned integer, got '{value}'"),
         })
 }
 
-fn parse_bool(key: &str, value: &str) -> Result<bool> {
+fn parse_bool(key: impl Into<String>, value: &str) -> Result<bool> {
+    let key = key.into();
     match value.trim().to_lowercase().as_str() {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(FtIndexError::InvalidOption {
-            key: key.to_string(),
+            key,
             message: format!("expected boolean, got '{value}'"),
         }),
     }
