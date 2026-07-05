@@ -443,11 +443,23 @@ fn search_rejects_invalid_roaring_filter_bytes() -> anyhow::Result<()> {
 
 #[test]
 fn phrase_query_uses_positions() -> anyhow::Result<()> {
-    let bytes = build_index_with_config(FullTextIndexConfig::new().with_positions(true))?;
+    let bytes = build_index()?;
     let reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
     let result = reader.search(phrase_query("full text", "text"), 10)?;
 
     assert_eq!(result.row_ids, vec![10]);
+    Ok(())
+}
+
+#[test]
+fn phrase_query_rejects_index_without_positions() -> anyhow::Result<()> {
+    let bytes = build_index_with_config(FullTextIndexConfig::new().with_positions(false))?;
+    let reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    let err = reader
+        .search(phrase_query("full text", "text"), 10)
+        .expect_err("phrase query without positions should fail");
+
+    assert!(err.to_string().contains("phrase query requires positions"));
     Ok(())
 }
 
@@ -546,6 +558,24 @@ fn stop_words_require_stop_word_removal() {
         .expect_err("stop words should require remove-stop-words=true");
 
     assert!(err.to_string().contains("requires remove-stop-words=true"));
+}
+
+#[test]
+fn tokenizer_default_values_are_explicit() {
+    let config = TokenizerConfig::default();
+
+    assert_eq!(config.tokenizer, TokenizerKind::Default);
+    assert_eq!(config.ngram_min_gram, 3);
+    assert_eq!(config.ngram_max_gram, 3);
+    assert!(!config.ngram_prefix_only);
+    assert!(config.lower_case);
+    assert_eq!(config.max_token_length, 40);
+    assert!(config.ascii_folding);
+    assert!(config.stem);
+    assert_eq!(config.language, "english");
+    assert!(config.remove_stop_words);
+    assert!(config.stop_words.is_empty());
+    assert!(config.with_position);
 }
 
 #[test]
@@ -671,7 +701,7 @@ fn search_rejects_unknown_column_name() -> anyhow::Result<()> {
 #[test]
 fn search_accepts_paimon_boolean_query_forms() -> anyhow::Result<()> {
     let query = r#"{"boolean":{"must":[{"match":{"column":"text","terms":"paimon"}}],"must_not":[{"phrase":{"column":"text","query":"legacy"}}]}}"#;
-    let bytes = build_index_with_config(FullTextIndexConfig::new().with_positions(true))?;
+    let bytes = build_index()?;
     let reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
     let result = reader.search(query, 10)?;
 

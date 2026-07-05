@@ -49,7 +49,7 @@ impl Default for TokenizerConfig {
             language: "english".to_string(),
             remove_stop_words: true,
             stop_words: Vec::new(),
-            with_position: false,
+            with_position: true,
         }
     }
 }

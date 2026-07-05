@@ -37,8 +37,8 @@ Supported tokenizers in this first implementation:
 - `jieba`
 
 Default tokenizer behavior uses English full-text defaults: lower-case,
-stemming, stop-word removal, ASCII folding, max token length 40, and no
-positions unless `with-position=true` is set. Phrase search requires positions.
+stemming, stop-word removal, ASCII folding, max token length 40, and positions.
+Set `with-position=false` only when phrase search is not needed.
 
 Readers expose archived Tantivy files through a seek-on-demand directory, so
 opening an index reads the envelope and Tantivy metadata without loading all

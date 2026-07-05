@@ -41,8 +41,9 @@ with FullTextIndexReader(input_) as reader:
 `search()` accepts the query DSL as a JSON string. `match` supports `column`,
 `operator`, `boost`, `fuzziness`, `max_expansions`, and `prefix_length`. If
 `column` is omitted, a multi-field index searches all indexed text fields. Use
-`"fuzziness":"auto"` for auto fuzziness. `match_phrase` requires the index to
-be created with `with-position=true`.
+`"fuzziness":"auto"` for auto fuzziness. `match_phrase` requires positions,
+which are stored by default unless the index is created with
+`with-position=false`.
 
 `filter_bytes` must be a serialized 64-bit Roaring bitmap (`RoaringTreemap`)
 containing the allowed row ids. The filter is applied during Tantivy
