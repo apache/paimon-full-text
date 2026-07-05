@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -28,13 +29,26 @@ public class FullTextNativeRoundTripTest {
         }
 
         byte[] indexBytes = output.toByteArray();
+        AtomicInteger maxBatchSize = new AtomicInteger();
         FullTextIndexInput input =
-                (position, buffer, offset, length) ->
-                        readAt(indexBytes, position, buffer, offset, length);
+                new FullTextIndexInput() {
+                    @Override
+                    public void readAt(long position, byte[] buffer, int offset, int length)
+                            throws IOException {
+                        readAtBytes(indexBytes, position, buffer, offset, length);
+                    }
+
+                    @Override
+                    public void pread(long[] positions, byte[][] buffers) throws IOException {
+                        maxBatchSize.updateAndGet(current -> Math.max(current, positions.length));
+                        FullTextIndexInput.super.pread(positions, buffers);
+                    }
+                };
 
         try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
             FullTextSearchResult result = reader.search(FullTextQuery.match("paimon", "text"), 10);
 
+            assertTrue(maxBatchSize.get() > 1);
             assertEquals(1, result.size());
             assertEquals(10L, result.rowIds()[0]);
             assertTrue(result.scores()[0] > 0.0f);
@@ -53,7 +67,7 @@ public class FullTextNativeRoundTripTest {
         return path != null && !path.isEmpty() && new File(path).isFile();
     }
 
-    private static void readAt(
+    private static void readAtBytes(
             byte[] source, long position, byte[] buffer, int offset, int length) throws IOException {
         long end = position + length;
         if (position < 0 || end > source.length || end < position) {

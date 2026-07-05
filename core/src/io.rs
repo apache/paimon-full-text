@@ -5,6 +5,12 @@ pub struct ReadRequest<'a> {
     pub buf: &'a mut [u8],
 }
 
+impl<'a> ReadRequest<'a> {
+    pub fn new(pos: u64, buf: &'a mut [u8]) -> Self {
+        Self { pos, buf }
+    }
+}
+
 pub trait SeekRead: Send {
     fn pread(&mut self, ranges: &mut [ReadRequest<'_>]) -> io::Result<()>;
 }

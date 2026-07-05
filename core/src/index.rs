@@ -2,7 +2,9 @@ use crate::config::{FullTextIndexConfig, FullTextIndexMetadata};
 use crate::error::{FtIndexError, Result};
 use crate::io::{SeekRead, SeekWrite};
 use crate::query::{BooleanOccur, FullTextQuery, MatchOperator};
-use crate::storage::{read_exact_at, read_header, write_envelope, ArchiveFileEntry, IndexHeader};
+use crate::storage::{
+    read_archive_files_with, read_header, write_envelope, ArchiveFileEntry, IndexHeader,
+};
 use crate::tokenizer::{TokenizerConfig, TokenizerKind};
 use roaring::RoaringTreemap;
 use std::fmt;
@@ -110,11 +112,10 @@ impl<R: SeekRead> FullTextIndexReader<R> {
     pub fn open(mut input: R) -> Result<Self> {
         let (header, body_start) = read_header(&mut input)?;
         let directory = RamDirectory::create();
-        for file in &header.files {
-            let mut data = vec![0u8; file.length as usize];
-            read_exact_at(&mut input, body_start + file.offset, &mut data)?;
-            directory.atomic_write(Path::new(&file.name), &data)?;
-        }
+        read_archive_files_with(&mut input, body_start, &header.files, |name, data| {
+            directory.atomic_write(Path::new(name), data)?;
+            Ok(())
+        })?;
         let mut index = Index::open(directory)?;
         register_tokenizer(&mut index, &header.metadata.config.tokenizer)?;
         Ok(Self {

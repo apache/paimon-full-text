@@ -63,37 +63,82 @@ unsafe impl Send for JavaInput {}
 
 impl SeekRead for JavaInput {
     fn pread(&mut self, ranges: &mut [ReadRequest<'_>]) -> io::Result<()> {
+        if ranges.is_empty() {
+            return Ok(());
+        }
+
         let mut env = self
             .jvm
             .attach_current_thread()
             .map_err(|e| io::Error::other(format!("JNI attach failed: {e}")))?;
-        for range in ranges {
-            let array = env
+
+        let positions = env
+            .new_long_array(ranges.len() as i32)
+            .map_err(|e| io::Error::other(format!("new_long_array failed: {e}")))?;
+        let position_values: Vec<i64> = ranges.iter().map(|range| range.pos as i64).collect();
+        env.set_long_array_region(&positions, 0, &position_values)
+            .map_err(|e| io::Error::other(format!("set_long_array_region failed: {e}")))?;
+
+        let byte_array_class = env
+            .find_class("[B")
+            .map_err(|e| io::Error::other(format!("find byte[] class failed: {e}")))?;
+        let buffers = env
+            .new_object_array(ranges.len() as i32, byte_array_class, JObject::null())
+            .map_err(|e| io::Error::other(format!("new_object_array failed: {e}")))?;
+        for (idx, range) in ranges.iter().enumerate() {
+            let buffer = env
                 .new_byte_array(range.buf.len() as i32)
                 .map_err(|e| io::Error::other(format!("new_byte_array failed: {e}")))?;
-            let array_obj = JObject::from(array);
-            env.call_method(
-                self.input.as_obj(),
-                "readAt",
-                "(J[BII)V",
-                &[
-                    JValue::Long(range.pos as i64),
-                    JValue::Object(&array_obj),
-                    JValue::Int(0),
-                    JValue::Int(range.buf.len() as i32),
-                ],
-            )
-            .map_err(|e| io::Error::other(format!("Java input readAt failed: {e}")))?;
-            let array = JByteArray::from(array_obj);
+            env.set_object_array_element(&buffers, idx as i32, buffer)
+                .map_err(|e| io::Error::other(format!("set_object_array_element failed: {e}")))?;
+        }
+
+        env.call_method(
+            self.input.as_obj(),
+            "pread",
+            "([J[[B)V",
+            &[JValue::Object(&positions), JValue::Object(&buffers)],
+        )
+        .map_err(|e| io::Error::other(format!("Java input pread failed: {e}")))?;
+
+        copy_java_buffers(&mut env, &buffers, ranges)
+    }
+}
+
+fn copy_java_buffers(
+    env: &mut JNIEnv<'_>,
+    buffers: &JObjectArray<'_>,
+    ranges: &mut [ReadRequest<'_>],
+) -> io::Result<()> {
+    for (idx, range) in ranges.iter_mut().enumerate() {
+        let object = env
+            .get_object_array_element(buffers, idx as i32)
+            .map_err(|e| io::Error::other(format!("get_object_array_element failed: {e}")))?;
+        let buffer = JByteArray::from(object);
+        let length = env
+            .get_array_length(&buffer)
+            .map_err(|e| io::Error::other(format!("get_array_length failed: {e}")))?
+            as usize;
+        if length != range.buf.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Java pread returned buffer length {} != {}",
+                    length,
+                    range.buf.len()
+                ),
+            ));
+        }
+        if length > 0 {
             let mut signed = vec![0i8; range.buf.len()];
-            env.get_byte_array_region(&array, 0, &mut signed)
+            env.get_byte_array_region(&buffer, 0, &mut signed)
                 .map_err(|e| io::Error::other(format!("get_byte_array_region failed: {e}")))?;
             for (dst, src) in range.buf.iter_mut().zip(signed) {
                 *dst = src as u8;
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 struct WriterHandle {

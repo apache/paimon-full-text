@@ -34,6 +34,12 @@ try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
 (`RoaringTreemap`) containing the allowed row ids. The filter is applied during
 Tantivy collection, before the top results are selected.
 
+Input reads:
+
+- Implement `FullTextIndexInput.readAt(...)` for compatibility.
+- Override `FullTextIndexInput.pread(long[] positions, byte[][] buffers)` when
+  the storage client can batch, coalesce, or parallelize positional reads.
+
 Native loading:
 
 - Set `PAIMON_FTINDEX_JNI_LIB_PATH` to the full path of

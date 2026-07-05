@@ -1,10 +1,12 @@
-use paimon_ftindex_core::io::{PosWriter, SliceReader};
+use paimon_ftindex_core::io::{PosWriter, ReadRequest, SeekRead, SliceReader};
 use paimon_ftindex_core::{
     FullTextIndexConfig, FullTextIndexReader, FullTextIndexWriter, FullTextQuery, MatchOperator,
     TokenizerConfig, TokenizerKind,
 };
 use roaring::RoaringTreemap;
 use std::collections::HashMap;
+use std::io;
+use std::sync::{Arc, Mutex};
 
 fn build_index() -> anyhow::Result<Vec<u8>> {
     let mut writer = FullTextIndexWriter::new(FullTextIndexConfig::new())?;
@@ -18,6 +20,63 @@ fn build_index() -> anyhow::Result<Vec<u8>> {
         writer.write(&mut output)?;
     }
     Ok(bytes)
+}
+
+#[derive(Default)]
+struct ReadStats {
+    max_ranges_per_batch: usize,
+}
+
+struct CountingSliceReader {
+    data: Vec<u8>,
+    stats: Arc<Mutex<ReadStats>>,
+}
+
+impl CountingSliceReader {
+    fn new(data: Vec<u8>, stats: Arc<Mutex<ReadStats>>) -> Self {
+        Self { data, stats }
+    }
+}
+
+impl SeekRead for CountingSliceReader {
+    fn pread(&mut self, ranges: &mut [ReadRequest<'_>]) -> io::Result<()> {
+        {
+            let mut stats = self.stats.lock().unwrap();
+            stats.max_ranges_per_batch = stats.max_ranges_per_batch.max(ranges.len());
+        }
+        for range in ranges {
+            let start = usize::try_from(range.pos)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+            let end = start
+                .checked_add(range.buf.len())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "range overflow"))?;
+            if end > self.data.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "read past end of slice",
+                ));
+            }
+            range.buf.copy_from_slice(&self.data[start..end]);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn reader_open_batches_archive_file_reads() -> anyhow::Result<()> {
+    let bytes = build_index()?;
+    let stats = Arc::new(Mutex::new(ReadStats::default()));
+    let input = CountingSliceReader::new(bytes, Arc::clone(&stats));
+
+    let mut reader = FullTextIndexReader::open(input)?;
+    let result = reader.search(FullTextQuery::match_query("paimon", "text"), 10)?;
+
+    assert_eq!(result.row_ids.len(), 2);
+    assert!(
+        stats.lock().unwrap().max_ranges_per_batch > 1,
+        "reader open should batch archive file reads into one pread call"
+    );
+    Ok(())
 }
 
 #[test]

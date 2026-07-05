@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 pub const FORMAT_MAGIC: &[u8; 8] = b"PFTIDX01";
 pub const FORMAT_VERSION: u32 = 1;
+const MAX_ARCHIVE_READ_BATCH_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ARCHIVE_READ_BATCH_RANGES: usize = 64;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArchiveFileEntry {
@@ -59,8 +61,166 @@ pub fn read_header<R: SeekRead>(input: &mut R) -> Result<(IndexHeader, u64)> {
     Ok((header, 16 + header_len as u64))
 }
 
+pub fn read_archive_files<R: SeekRead>(
+    input: &mut R,
+    body_start: u64,
+    files: &[ArchiveFileEntry],
+) -> Result<Vec<(String, Vec<u8>)>> {
+    read_archive_files_with(input, body_start, files, |name, data| {
+        Ok((name.to_string(), data.to_vec()))
+    })
+}
+
+pub fn read_archive_files_with<R, F, T>(
+    input: &mut R,
+    body_start: u64,
+    files: &[ArchiveFileEntry],
+    mut consume: F,
+) -> Result<Vec<T>>
+where
+    R: SeekRead,
+    F: FnMut(&str, &[u8]) -> Result<T>,
+{
+    let mut output = Vec::with_capacity(files.len());
+    let mut pending = Vec::new();
+    let mut pending_bytes = 0usize;
+
+    for file in files {
+        let length = usize::try_from(file.length).map_err(|_| {
+            FtIndexError::InvalidStorage(format!("archive file '{}' is too large", file.name))
+        })?;
+        let pos = body_start.checked_add(file.offset).ok_or_else(|| {
+            FtIndexError::InvalidStorage(format!("archive file '{}' offset overflow", file.name))
+        })?;
+
+        if !pending.is_empty()
+            && (pending.len() >= MAX_ARCHIVE_READ_BATCH_RANGES
+                || pending_bytes.saturating_add(length) > MAX_ARCHIVE_READ_BATCH_BYTES)
+        {
+            read_archive_file_batch(input, &mut pending, &mut consume, &mut output)?;
+            pending_bytes = 0;
+        }
+
+        pending.push(PendingArchiveFile {
+            name: file.name.clone(),
+            pos,
+            data: vec![0u8; length],
+        });
+        pending_bytes = pending_bytes.saturating_add(length);
+    }
+
+    if !pending.is_empty() {
+        read_archive_file_batch(input, &mut pending, &mut consume, &mut output)?;
+    }
+
+    Ok(output)
+}
+
+struct PendingArchiveFile {
+    name: String,
+    pos: u64,
+    data: Vec<u8>,
+}
+
+fn read_archive_file_batch<R, F, T>(
+    input: &mut R,
+    pending: &mut Vec<PendingArchiveFile>,
+    consume: &mut F,
+    output: &mut Vec<T>,
+) -> Result<()>
+where
+    R: SeekRead,
+    F: FnMut(&str, &[u8]) -> Result<T>,
+{
+    {
+        let mut requests: Vec<_> = pending
+            .iter_mut()
+            .map(|file| ReadRequest::new(file.pos, file.data.as_mut_slice()))
+            .collect();
+        input.pread(&mut requests)?;
+    }
+
+    for file in pending.drain(..) {
+        output.push(consume(&file.name, &file.data)?);
+    }
+    Ok(())
+}
+
 pub fn read_exact_at<R: SeekRead>(input: &mut R, pos: u64, buf: &mut [u8]) -> Result<()> {
-    let mut request = [ReadRequest { pos, buf }];
+    let mut request = [ReadRequest::new(pos, buf)];
     input.pread(&mut request)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct CountingReader {
+        data: Vec<u8>,
+        pread_batches: usize,
+        max_ranges_per_batch: usize,
+    }
+
+    impl SeekRead for CountingReader {
+        fn pread(&mut self, ranges: &mut [ReadRequest<'_>]) -> std::io::Result<()> {
+            self.pread_batches += 1;
+            self.max_ranges_per_batch = self.max_ranges_per_batch.max(ranges.len());
+            for range in ranges {
+                let start = usize::try_from(range.pos).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "offset overflow")
+                })?;
+                let end = start.checked_add(range.buf.len()).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "range overflow")
+                })?;
+                if end > self.data.len() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "read past end of slice",
+                    ));
+                }
+                range.buf.copy_from_slice(&self.data[start..end]);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn read_archive_files_uses_one_batched_pread() {
+        let mut reader = CountingReader {
+            data: b"headerabcdef".to_vec(),
+            pread_batches: 0,
+            max_ranges_per_batch: 0,
+        };
+        let files = vec![
+            ArchiveFileEntry {
+                name: "a".to_string(),
+                offset: 0,
+                length: 2,
+            },
+            ArchiveFileEntry {
+                name: "b".to_string(),
+                offset: 2,
+                length: 3,
+            },
+            ArchiveFileEntry {
+                name: "c".to_string(),
+                offset: 5,
+                length: 1,
+            },
+        ];
+
+        let files = read_archive_files(&mut reader, 6, &files).expect("archive files");
+
+        assert_eq!(reader.pread_batches, 1);
+        assert_eq!(reader.max_ranges_per_batch, 3);
+        assert_eq!(
+            files,
+            vec![
+                ("a".to_string(), b"ab".to_vec()),
+                ("b".to_string(), b"cde".to_vec()),
+                ("c".to_string(), b"f".to_vec()),
+            ]
+        );
+    }
 }
