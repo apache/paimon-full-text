@@ -58,7 +58,7 @@ lib = _load_library()
 
 WRITE_FN = CFUNCTYPE(c_int, c_void_p, POINTER(c_uint8), c_size_t)
 FLUSH_FN = CFUNCTYPE(c_int, c_void_p)
-READ_AT_FN = CFUNCTYPE(c_int, c_void_p, c_uint64, POINTER(c_uint8), c_size_t)
+PREAD_FN = CFUNCTYPE(c_int, c_void_p, c_uint64, POINTER(c_uint8), c_size_t)
 
 
 class PaimonFtindexOutputFile(Structure):
@@ -72,7 +72,19 @@ class PaimonFtindexOutputFile(Structure):
 class PaimonFtindexInputFile(Structure):
     _fields_ = [
         ("ctx", c_void_p),
-        ("read_at_fn", READ_AT_FN),
+        ("pread_fn", PREAD_FN),
+    ]
+
+
+class PaimonFtindexReadMetrics(Structure):
+    _fields_ = [
+        ("pread_calls", c_uint64),
+        ("pread_ranges", c_uint64),
+        ("pread_bytes", c_uint64),
+        ("cache_hits", c_uint64),
+        ("cache_misses", c_uint64),
+        ("cache_evictions", c_uint64),
+        ("cached_blocks", c_uint64),
     ]
 
 
@@ -85,6 +97,15 @@ lib.paimon_ftindex_writer_open.restype = c_void_p
 lib.paimon_ftindex_writer_add_document.argtypes = [c_void_p, c_int64, c_char_p]
 lib.paimon_ftindex_writer_add_document.restype = c_int
 
+lib.paimon_ftindex_writer_add_document_fields.argtypes = [
+    c_void_p,
+    c_int64,
+    POINTER(c_char_p),
+    POINTER(c_char_p),
+    c_size_t,
+]
+lib.paimon_ftindex_writer_add_document_fields.restype = c_int
+
 lib.paimon_ftindex_writer_write_index.argtypes = [c_void_p, PaimonFtindexOutputFile]
 lib.paimon_ftindex_writer_write_index.restype = c_int
 
@@ -94,7 +115,7 @@ lib.paimon_ftindex_writer_free.restype = None
 lib.paimon_ftindex_reader_open.argtypes = [PaimonFtindexInputFile]
 lib.paimon_ftindex_reader_open.restype = c_void_p
 
-lib.paimon_ftindex_reader_search_json.argtypes = [
+lib.paimon_ftindex_reader_search.argtypes = [
     c_void_p,
     c_char_p,
     c_size_t,
@@ -103,9 +124,9 @@ lib.paimon_ftindex_reader_search_json.argtypes = [
     c_size_t,
     POINTER(c_size_t),
 ]
-lib.paimon_ftindex_reader_search_json.restype = c_int
+lib.paimon_ftindex_reader_search.restype = c_int
 
-lib.paimon_ftindex_reader_search_json_with_roaring_filter.argtypes = [
+lib.paimon_ftindex_reader_search_with_roaring_filter.argtypes = [
     c_void_p,
     c_char_p,
     c_size_t,
@@ -116,7 +137,16 @@ lib.paimon_ftindex_reader_search_json_with_roaring_filter.argtypes = [
     c_size_t,
     POINTER(c_size_t),
 ]
-lib.paimon_ftindex_reader_search_json_with_roaring_filter.restype = c_int
+lib.paimon_ftindex_reader_search_with_roaring_filter.restype = c_int
+
+lib.paimon_ftindex_reader_prewarm.argtypes = [c_void_p]
+lib.paimon_ftindex_reader_prewarm.restype = c_int
+
+lib.paimon_ftindex_reader_read_metrics.argtypes = [
+    c_void_p,
+    POINTER(PaimonFtindexReadMetrics),
+]
+lib.paimon_ftindex_reader_read_metrics.restype = c_int
 
 lib.paimon_ftindex_reader_free.argtypes = [c_void_p]
 lib.paimon_ftindex_reader_free.restype = None

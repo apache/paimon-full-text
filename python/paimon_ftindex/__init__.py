@@ -1,11 +1,8 @@
-from .query import FullTextQuery, MatchQuery, PhraseQuery
-from .reader import FullTextIndexReader
+from .reader import FullTextIndexReader, FullTextReadMetrics
 from .writer import FullTextIndexWriter
 
 __all__ = [
     "FullTextIndexReader",
+    "FullTextReadMetrics",
     "FullTextIndexWriter",
-    "FullTextQuery",
-    "MatchQuery",
-    "PhraseQuery",
 ]

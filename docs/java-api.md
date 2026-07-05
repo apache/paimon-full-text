@@ -10,7 +10,6 @@ Main classes:
 
 - `FullTextIndexWriter`
 - `FullTextIndexReader`
-- `FullTextQuery`
 - `FullTextSearchResult`
 - `FullTextIndexInput`
 - `FullTextIndexOutput`
@@ -18,27 +17,49 @@ Main classes:
 Example:
 
 ```java
-try (FullTextIndexWriter writer = FullTextIndexWriter.create(Collections.emptyMap())) {
-    writer.addDocument(1L, "Apache Paimon full text search");
+Map<String, String> options = Collections.singletonMap("text-fields", "title,body");
+try (FullTextIndexWriter writer = FullTextIndexWriter.create(options)) {
+    Map<String, String> fields = new LinkedHashMap<>();
+    fields.put("title", "Apache Paimon");
+    fields.put("body", "lake storage");
+    writer.addDocument(1L, fields);
     writer.writeIndex(output);
 }
 
 try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
-    FullTextSearchResult result = reader.search(FullTextQuery.match("paimon", "text"), 10);
+    reader.prewarm();
+    FullTextSearchResult result =
+            reader.search("{\"match\":{\"query\":\"paimon\"}}", 10);
     FullTextSearchResult filtered =
-            reader.search(FullTextQuery.match("paimon", "text"), 10, roaringFilterBytes);
+            reader.search("{\"match\":{\"query\":\"paimno\",\"column\":\"title\",\"fuzziness\":1}}",
+                    10,
+                    roaringFilterBytes);
+    FullTextReadMetrics metrics = reader.readMetrics();
 }
 ```
+
+`search()` accepts the query DSL as a JSON string. `match` supports `column`,
+`operator`, `boost`, `fuzziness`, `max_expansions`, and `prefix_length`. If
+`column` is omitted, a multi-field index searches all indexed text fields. Use
+`"fuzziness":"auto"` for auto fuzziness. Boolean and boost-demotion queries use
+the same JSON DSL.
 
 `roaringFilterBytes` must be a serialized 64-bit Roaring bitmap
 (`RoaringTreemap`) containing the allowed row ids. The filter is applied during
 Tantivy collection, before the top results are selected.
 
+`prewarm()` eagerly initializes the underlying search reader and archive cache
+before a query burst. `readMetrics()` returns a snapshot with `preadCalls`,
+`preadRanges`, `preadBytes`, `cacheHits`, `cacheMisses`, `cacheEvictions`, and
+`cachedBlocks`.
+
 Input reads:
 
-- Implement `FullTextIndexInput.readAt(...)` for compatibility.
-- Override `FullTextIndexInput.pread(long[] positions, byte[][] buffers)` when
-  the storage client can batch, coalesce, or parallelize positional reads.
+- Implement `FullTextIndexInput.pread(long position, byte[] buffer, int offset,
+  int length)` as a single positional read. Rust owns any batching or
+  parallelism above this callback.
+- The implementation must be safe for concurrent calls. Synchronize inside
+  `pread` if the backing input keeps mutable state.
 
 Native loading:
 

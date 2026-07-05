@@ -1,7 +1,10 @@
 from io import BytesIO
 import struct
 
-from paimon_ftindex import FullTextIndexReader, FullTextIndexWriter, MatchQuery
+from paimon_ftindex import (
+    FullTextIndexReader,
+    FullTextIndexWriter,
+)
 
 
 class BytesInput:
@@ -20,10 +23,19 @@ def test_python_round_trip():
         writer.write(output)
 
     with FullTextIndexReader(BytesInput(output.getvalue())) as reader:
-        row_ids, scores = reader.search(MatchQuery("paimon"), limit=10)
+        metrics = reader.read_metrics()
+        assert metrics.pread_calls >= 2
+        assert metrics.pread_bytes > 16
+        reader.prewarm()
+        after_prewarm = reader.read_metrics()
+        assert after_prewarm.pread_calls > metrics.pread_calls
+        row_ids, scores = reader.search(match_query("paimon"), limit=10)
+        after_search = reader.read_metrics()
 
     assert row_ids == [1]
     assert scores[0] > 0
+    assert after_search.pread_calls >= after_prewarm.pread_calls
+    assert after_search.cache_misses >= metrics.cache_misses
 
 
 def test_python_search_with_roaring_filter():
@@ -37,10 +49,36 @@ def test_python_search_with_roaring_filter():
     filter_bytes = _roaring_treemap_bytes([allowed_id])
     with FullTextIndexReader(BytesInput(output.getvalue())) as reader:
         row_ids, scores = reader.search(
-            MatchQuery("paimon"), limit=10, filter_bytes=filter_bytes
+            match_query("paimon"), limit=10, filter_bytes=filter_bytes
         )
 
     assert row_ids == [allowed_id]
+    assert scores[0] > 0
+
+
+def test_python_multi_field_round_trip():
+    output = BytesIO()
+    with FullTextIndexWriter({"text-fields": "title,body"}) as writer:
+        writer.add_document_fields(
+            1,
+            {
+                "title": "Apache Paimon",
+                "body": "lake storage",
+            },
+        )
+        writer.add_document_fields(
+            2,
+            {
+                "title": "Tantivy",
+                "body": "Rust search engine",
+            },
+        )
+        writer.write(output)
+
+    with FullTextIndexReader(BytesInput(output.getvalue())) as reader:
+        row_ids, scores = reader.search(match_query("paimon"), limit=10)
+
+    assert row_ids == [1]
     assert scores[0] > 0
 
 
@@ -80,3 +118,7 @@ def _roaring_bitmap_bytes(values):
         payload.extend(values_bytes)
         offset += len(values_bytes)
     return bytes(out + descriptions + offsets + payload)
+
+
+def match_query(terms):
+    return '{"match":{"query":"' + terms + '"}}'

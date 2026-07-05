@@ -24,12 +24,36 @@ class FullTextIndexWriter:
             lib.paimon_ftindex_writer_open(key_array, value_array, len(keys))
         )
 
-    def add_document(self, row_id, text):
+    def add_document(self, row_id, text, column=None):
         if self._closed:
             raise RuntimeError("FullTextIndexWriter is closed")
+        if isinstance(text, dict):
+            if column is not None:
+                raise ValueError("column must not be set when text is a dict")
+            self.add_document_fields(row_id, text)
+            return
+        if column is not None:
+            self.add_document_fields(row_id, [(column, text)])
+            return
         check_status(
             lib.paimon_ftindex_writer_add_document(
                 self._ptr, int(row_id), str(text).encode("utf-8")
+            )
+        )
+
+    def add_document_fields(self, row_id, fields):
+        if self._closed:
+            raise RuntimeError("FullTextIndexWriter is closed")
+        items = list(fields.items()) if hasattr(fields, "items") else list(fields)
+        if not items:
+            raise ValueError("document fields must not be empty")
+        names = [str(name).encode("utf-8") for name, _ in items]
+        texts = [str(text).encode("utf-8") for _, text in items]
+        name_array = (c_char_p * len(names))(*names)
+        text_array = (c_char_p * len(texts))(*texts)
+        check_status(
+            lib.paimon_ftindex_writer_add_document_fields(
+                self._ptr, int(row_id), name_array, text_array, len(items)
             )
         )
 

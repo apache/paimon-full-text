@@ -11,10 +11,13 @@ rust-version = "1.86"
 [workspace.dependencies]
 anyhow = "1"
 jni = "0.21"
+levenshtein_automata = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 roaring = "0.11"
 tantivy = "0.26"
+tantivy-common = "0.11"
+tantivy-fst = "0.5"
 tantivy-jieba = "0.20"
 tempfile = "3"
 thiserror = "1"

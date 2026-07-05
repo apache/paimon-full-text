@@ -2,9 +2,7 @@ use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString
 use jni::sys::{jint, jlong, jobject};
 use jni::{JNIEnv, JavaVM};
 use paimon_ftindex_core::io::{ReadRequest, SeekRead, SeekWrite};
-use paimon_ftindex_core::{
-    FullTextIndexConfig, FullTextIndexReader, FullTextIndexWriter, FullTextQuery, TokenizerConfig,
-};
+use paimon_ftindex_core::{FullTextIndexConfig, FullTextIndexReader, FullTextIndexWriter};
 use std::collections::HashMap;
 use std::io;
 use std::ptr;
@@ -60,82 +58,67 @@ struct JavaInput {
 }
 
 unsafe impl Send for JavaInput {}
+unsafe impl Sync for JavaInput {}
 
 impl SeekRead for JavaInput {
-    fn pread(&mut self, ranges: &mut [ReadRequest<'_>]) -> io::Result<()> {
-        if ranges.is_empty() {
-            return Ok(());
-        }
-
+    fn pread(&self, ranges: &mut [ReadRequest<'_>]) -> io::Result<()> {
         let mut env = self
             .jvm
             .attach_current_thread()
             .map_err(|e| io::Error::other(format!("JNI attach failed: {e}")))?;
 
-        let positions = env
-            .new_long_array(ranges.len() as i32)
-            .map_err(|e| io::Error::other(format!("new_long_array failed: {e}")))?;
-        let position_values: Vec<i64> = ranges.iter().map(|range| range.pos as i64).collect();
-        env.set_long_array_region(&positions, 0, &position_values)
-            .map_err(|e| io::Error::other(format!("set_long_array_region failed: {e}")))?;
-
-        let byte_array_class = env
-            .find_class("[B")
-            .map_err(|e| io::Error::other(format!("find byte[] class failed: {e}")))?;
-        let buffers = env
-            .new_object_array(ranges.len() as i32, byte_array_class, JObject::null())
-            .map_err(|e| io::Error::other(format!("new_object_array failed: {e}")))?;
-        for (idx, range) in ranges.iter().enumerate() {
+        for range in ranges {
+            let position = i64::try_from(range.pos)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+            let length = i32::try_from(range.buf.len())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "range too large"))?;
             let buffer = env
-                .new_byte_array(range.buf.len() as i32)
+                .new_byte_array(length)
                 .map_err(|e| io::Error::other(format!("new_byte_array failed: {e}")))?;
-            env.set_object_array_element(&buffers, idx as i32, buffer)
-                .map_err(|e| io::Error::other(format!("set_object_array_element failed: {e}")))?;
+            let buffer_obj = JObject::from(buffer);
+            env.call_method(
+                self.input.as_obj(),
+                "pread",
+                "(J[BII)V",
+                &[
+                    JValue::Long(position),
+                    JValue::Object(&buffer_obj),
+                    JValue::Int(0),
+                    JValue::Int(length),
+                ],
+            )
+            .map_err(|e| io::Error::other(format!("Java input pread failed: {e}")))?;
+            copy_java_buffer(&mut env, JByteArray::from(buffer_obj), range.buf)?;
         }
-
-        env.call_method(
-            self.input.as_obj(),
-            "pread",
-            "([J[[B)V",
-            &[JValue::Object(&positions), JValue::Object(&buffers)],
-        )
-        .map_err(|e| io::Error::other(format!("Java input pread failed: {e}")))?;
-
-        copy_java_buffers(&mut env, &buffers, ranges)
+        Ok(())
     }
 }
 
-fn copy_java_buffers(
+fn copy_java_buffer(
     env: &mut JNIEnv<'_>,
-    buffers: &JObjectArray<'_>,
-    ranges: &mut [ReadRequest<'_>],
+    buffer: JByteArray<'_>,
+    output: &mut [u8],
 ) -> io::Result<()> {
-    for (idx, range) in ranges.iter_mut().enumerate() {
-        let object = env
-            .get_object_array_element(buffers, idx as i32)
-            .map_err(|e| io::Error::other(format!("get_object_array_element failed: {e}")))?;
-        let buffer = JByteArray::from(object);
-        let length = env
-            .get_array_length(&buffer)
-            .map_err(|e| io::Error::other(format!("get_array_length failed: {e}")))?
-            as usize;
-        if length != range.buf.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Java pread returned buffer length {} != {}",
-                    length,
-                    range.buf.len()
-                ),
-            ));
-        }
-        if length > 0 {
-            let mut signed = vec![0i8; range.buf.len()];
-            env.get_byte_array_region(&buffer, 0, &mut signed)
-                .map_err(|e| io::Error::other(format!("get_byte_array_region failed: {e}")))?;
-            for (dst, src) in range.buf.iter_mut().zip(signed) {
-                *dst = src as u8;
-            }
+    let length = env
+        .get_array_length(&buffer)
+        .map_err(|e| io::Error::other(format!("get_array_length failed: {e}")))?
+        as usize;
+    if length != output.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Java pread returned buffer length {} != {}",
+                length,
+                output.len()
+            ),
+        ));
+    }
+    if length > 0 {
+        let mut signed = vec![0i8; output.len()];
+        env.get_byte_array_region(&buffer, 0, &mut signed)
+            .map_err(|e| io::Error::other(format!("get_byte_array_region failed: {e}")))?;
+        for (dst, src) in output.iter_mut().zip(signed) {
+            *dst = src as u8;
         }
     }
     Ok(())
@@ -171,6 +154,20 @@ pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_addD
     text: JString,
 ) {
     if let Err(e) = add_document(&mut env, writer_ptr, row_id, text) {
+        throw(&mut env, &e);
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_addDocumentFields(
+    mut env: JNIEnv,
+    _class: JClass,
+    writer_ptr: jlong,
+    row_id: jlong,
+    field_names: JObjectArray,
+    texts: JObjectArray,
+) {
+    if let Err(e) = add_document_fields(&mut env, writer_ptr, row_id, field_names, texts) {
         throw(&mut env, &e);
     }
 }
@@ -213,35 +210,52 @@ pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_open
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_searchJson(
+pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_search(
     mut env: JNIEnv,
     _class: JClass,
     reader_ptr: jlong,
-    query_json: JString,
+    query: JString,
     limit: jint,
 ) -> jobject {
-    match search_json(&mut env, reader_ptr, query_json, limit, None) {
+    match search(&mut env, reader_ptr, query, limit, None) {
         Ok(obj) => obj,
         Err(e) => throw_and_return(&mut env, &e, ptr::null_mut()),
     }
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_searchJsonWithRoaringFilter(
+pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_searchWithRoaringFilter(
     mut env: JNIEnv,
     _class: JClass,
     reader_ptr: jlong,
-    query_json: JString,
+    query: JString,
     limit: jint,
     roaring_filter: JByteArray,
 ) -> jobject {
-    match search_json(
-        &mut env,
-        reader_ptr,
-        query_json,
-        limit,
-        Some(roaring_filter),
-    ) {
+    match search(&mut env, reader_ptr, query, limit, Some(roaring_filter)) {
+        Ok(obj) => obj,
+        Err(e) => throw_and_return(&mut env, &e, ptr::null_mut()),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_prewarm(
+    mut env: JNIEnv,
+    _class: JClass,
+    reader_ptr: jlong,
+) {
+    if let Err(e) = prewarm(reader_ptr) {
+        throw(&mut env, &e);
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_readMetrics(
+    mut env: JNIEnv,
+    _class: JClass,
+    reader_ptr: jlong,
+) -> jobject {
+    match read_metrics(&mut env, reader_ptr) {
         Ok(obj) => obj,
         Err(e) => throw_and_return(&mut env, &e, ptr::null_mut()),
     }
@@ -266,8 +280,7 @@ fn create_writer(
     values: JObjectArray,
 ) -> Result<jlong, String> {
     let options = options_from_arrays(env, keys, values)?;
-    let tokenizer = TokenizerConfig::from_options(&options).map_err(|e| e.to_string())?;
-    let config = FullTextIndexConfig::new().tokenizer(tokenizer);
+    let config = FullTextIndexConfig::from_options(&options).map_err(|e| e.to_string())?;
     let writer = FullTextIndexWriter::new(config).map_err(|e| e.to_string())?;
     Ok(Box::into_raw(Box::new(WriterHandle { inner: writer })) as jlong)
 }
@@ -289,6 +302,21 @@ fn add_document(
         .map_err(|e| e.to_string())
 }
 
+fn add_document_fields(
+    env: &mut JNIEnv,
+    writer_ptr: jlong,
+    row_id: jlong,
+    field_names: JObjectArray,
+    texts: JObjectArray,
+) -> Result<(), String> {
+    let writer = handle_mut::<WriterHandle>(writer_ptr, "writer")?;
+    let fields = string_pair_arrays(env, field_names, texts)?;
+    writer
+        .inner
+        .add_document_fields(row_id, fields)
+        .map_err(|e| e.to_string())
+}
+
 fn write_index(env: &mut JNIEnv, writer_ptr: jlong, output: JObject) -> Result<(), String> {
     let writer = handle_mut::<WriterHandle>(writer_ptr, "writer")?;
     let jvm = env.get_java_vm().map_err(|e| e.to_string())?;
@@ -305,30 +333,29 @@ fn open_reader(env: &mut JNIEnv, input: JObject) -> Result<jlong, String> {
     Ok(Box::into_raw(Box::new(ReaderHandle { inner: reader })) as jlong)
 }
 
-fn search_json(
+fn search(
     env: &mut JNIEnv,
     reader_ptr: jlong,
-    query_json: JString,
+    query: JString,
     limit: jint,
     roaring_filter: Option<JByteArray>,
 ) -> Result<jobject, String> {
-    let reader = handle_mut::<ReaderHandle>(reader_ptr, "reader")?;
-    let query_json: String = env
-        .get_string(&query_json)
-        .map_err(|e| format!("failed to read query json: {e}"))?
+    let reader = handle_ref::<ReaderHandle>(reader_ptr, "reader")?;
+    let query: String = env
+        .get_string(&query)
+        .map_err(|e| format!("failed to read query: {e}"))?
         .into();
-    let query = FullTextQuery::from_json(&query_json).map_err(|e| e.to_string())?;
     let limit = validate_search_limit(limit)?;
     let result = if let Some(roaring_filter) = roaring_filter {
         let roaring_filter = read_byte_array(env, roaring_filter)?;
         reader
             .inner
-            .search_with_roaring_filter(query, limit, &roaring_filter)
+            .search_with_roaring_filter(&query, limit, &roaring_filter)
             .map_err(|e| e.to_string())?
     } else {
         reader
             .inner
-            .search(query, limit)
+            .search(&query, limit)
             .map_err(|e| e.to_string())?
     };
 
@@ -350,6 +377,32 @@ fn search_json(
             "org/apache/paimon/index/fulltext/FullTextSearchResult",
             "([J[F)V",
             &[JValue::Object(&row_ids_obj), JValue::Object(&scores_obj)],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(obj.into_raw())
+}
+
+fn prewarm(reader_ptr: jlong) -> Result<(), String> {
+    let reader = handle_ref::<ReaderHandle>(reader_ptr, "reader")?;
+    reader.inner.prewarm().map_err(|e| e.to_string())
+}
+
+fn read_metrics(env: &mut JNIEnv, reader_ptr: jlong) -> Result<jobject, String> {
+    let reader = handle_ref::<ReaderHandle>(reader_ptr, "reader")?;
+    let metrics = reader.inner.read_metrics();
+    let obj = env
+        .new_object(
+            "org/apache/paimon/index/fulltext/FullTextReadMetrics",
+            "(JJJJJJJ)V",
+            &[
+                JValue::Long(metrics.pread_calls as jlong),
+                JValue::Long(metrics.pread_ranges as jlong),
+                JValue::Long(metrics.pread_bytes as jlong),
+                JValue::Long(metrics.cache_hits as jlong),
+                JValue::Long(metrics.cache_misses as jlong),
+                JValue::Long(metrics.cache_evictions as jlong),
+                JValue::Long(metrics.cached_blocks as jlong),
+            ],
         )
         .map_err(|e| e.to_string())?;
     Ok(obj.into_raw())
@@ -404,6 +457,43 @@ fn options_from_arrays(
     Ok(options)
 }
 
+fn string_pair_arrays(
+    env: &mut JNIEnv,
+    keys: JObjectArray,
+    values: JObjectArray,
+) -> Result<Vec<(String, String)>, String> {
+    let key_len = env.get_array_length(&keys).map_err(|e| e.to_string())?;
+    let value_len = env.get_array_length(&values).map_err(|e| e.to_string())?;
+    if key_len != value_len {
+        return Err(format!(
+            "fieldNames length {} does not match texts length {}",
+            key_len, value_len
+        ));
+    }
+    if key_len == 0 {
+        return Err("document fields must not be empty".to_string());
+    }
+    let mut fields = Vec::with_capacity(key_len as usize);
+    for i in 0..key_len {
+        let key = env
+            .get_object_array_element(&keys, i)
+            .map_err(|e| e.to_string())?;
+        let value = env
+            .get_object_array_element(&values, i)
+            .map_err(|e| e.to_string())?;
+        let key: String = env
+            .get_string(&JString::from(key))
+            .map_err(|e| e.to_string())?
+            .into();
+        let value: String = env
+            .get_string(&JString::from(value))
+            .map_err(|e| e.to_string())?
+            .into();
+        fields.push((key, value));
+    }
+    Ok(fields)
+}
+
 fn handle_mut<'a, T>(ptr: jlong, name: &str) -> Result<&'a mut T, String> {
     if ptr == 0 {
         return Err(format!("{name} is closed"));
@@ -411,6 +501,17 @@ fn handle_mut<'a, T>(ptr: jlong, name: &str) -> Result<&'a mut T, String> {
     unsafe {
         (ptr as *mut T)
             .as_mut()
+            .ok_or_else(|| format!("{name} is null"))
+    }
+}
+
+fn handle_ref<'a, T>(ptr: jlong, name: &str) -> Result<&'a T, String> {
+    if ptr == 0 {
+        return Err(format!("{name} is closed"));
+    }
+    unsafe {
+        (ptr as *const T)
+            .as_ref()
             .ok_or_else(|| format!("{name} is null"))
     }
 }

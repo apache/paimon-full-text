@@ -765,10 +765,13 @@ name = "paimon-ftindex-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "levenshtein_automata",
  "roaring",
  "serde",
  "serde_json",
  "tantivy",
+ "tantivy-common",
+ "tantivy-fst",
  "tantivy-jieba",
  "tempfile",
  "thiserror 1.0.69",

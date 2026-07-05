@@ -7,10 +7,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+levenshtein_automata.workspace = true
 roaring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tantivy.workspace = true
+tantivy-common.workspace = true
+tantivy-fst.workspace = true
 tantivy-jieba.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true

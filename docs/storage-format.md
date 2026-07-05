@@ -12,13 +12,16 @@ body:       concatenated Tantivy files
 
 The header contains:
 
-- `metadata.format_version`
 - `metadata.config`
 - `metadata.document_count`
 - `metadata.tantivy_version`
 - `files[]`: Tantivy file name, body-relative offset, and length
 
-Readers first read the 16-byte fixed prefix, then the JSON header, then the
-listed Tantivy files by positional reads. The current reader loads listed files
-into Tantivy `RamDirectory`; a future reader can replace this with a custom
-seek-on-demand `Directory` without changing the envelope.
+Readers first read the 16-byte fixed prefix and JSON header. The Rust reader
+then exposes listed Tantivy files through a read-only seek-on-demand directory,
+so segment file bytes are fetched by positional reads only when Tantivy asks for
+the corresponding byte range. Readers reject headers larger than 16 MiB before
+allocating the header buffer.
+
+The body stores Tantivy segment files directly. Readers reject index files whose
+recorded `metadata.tantivy_version` does not match the linked Tantivy runtime.
