@@ -1,6 +1,7 @@
 [package]
 name = "paimon-ftindex-core"
 version = "0.1.0"
+description = "Apache Paimon Full Text — core Rust library"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
