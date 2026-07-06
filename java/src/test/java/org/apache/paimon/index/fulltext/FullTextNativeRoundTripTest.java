@@ -20,8 +20,9 @@ public class FullTextNativeRoundTripTest {
     @Test
     public void testJavaNativeRoundTrip() throws Exception {
         assumeTrue(
-                "PAIMON_FTINDEX_JNI_LIB_PATH must point to the built JNI library",
-                nativeLibraryConfigured());
+                "PAIMON_FTINDEX_JNI_LIB_PATH must point to the built JNI library "
+                        + "or the native library must be present in classpath resources",
+                nativeLibraryAvailable());
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (FullTextIndexWriter writer = FullTextIndexWriter.create(Collections.emptyMap())) {
@@ -72,8 +73,9 @@ public class FullTextNativeRoundTripTest {
     @Test
     public void testJavaNativeMultiFieldRoundTrip() throws Exception {
         assumeTrue(
-                "PAIMON_FTINDEX_JNI_LIB_PATH must point to the built JNI library",
-                nativeLibraryConfigured());
+                "PAIMON_FTINDEX_JNI_LIB_PATH must point to the built JNI library "
+                        + "or the native library must be present in classpath resources",
+                nativeLibraryAvailable());
 
         Map<String, String> options = Collections.singletonMap("text-fields", "title,body");
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -100,9 +102,51 @@ public class FullTextNativeRoundTripTest {
         }
     }
 
-    private static boolean nativeLibraryConfigured() {
+    private static boolean nativeLibraryAvailable() {
         String path = System.getenv("PAIMON_FTINDEX_JNI_LIB_PATH");
-        return path != null && !path.isEmpty() && new File(path).isFile();
+        if (path != null && !path.isEmpty() && new File(path).isFile()) {
+            return true;
+        }
+        return FullTextNativeRoundTripTest.class.getResource(nativeResourcePath()) != null;
+    }
+
+    private static String nativeResourcePath() {
+        String os = normalizeOs(System.getProperty("os.name", ""));
+        String arch = normalizeArch(System.getProperty("os.arch", ""));
+        return "/native/" + os + "/" + arch + "/" + mapLibraryName(os);
+    }
+
+    private static String normalizeOs(String osName) {
+        String lower = osName.toLowerCase();
+        if (lower.contains("linux")) {
+            return "linux";
+        } else if (lower.contains("mac") || lower.contains("darwin")) {
+            return "macos";
+        } else if (lower.contains("win")) {
+            return "windows";
+        }
+        return "unsupported";
+    }
+
+    private static String normalizeArch(String archName) {
+        String lower = archName.toLowerCase();
+        if (lower.equals("amd64") || lower.equals("x86_64")) {
+            return "x86_64";
+        } else if (lower.equals("aarch64") || lower.equals("arm64")) {
+            return "aarch64";
+        }
+        return "unsupported";
+    }
+
+    private static String mapLibraryName(String os) {
+        if (os.equals("linux")) {
+            return "libpaimon_ftindex_jni.so";
+        } else if (os.equals("macos")) {
+            return "libpaimon_ftindex_jni.dylib";
+        } else if (os.equals("windows")) {
+            return "paimon_ftindex_jni.dll";
+        }
+        return "unsupported";
     }
 
     private static String matchQuery(String terms, String column) {
