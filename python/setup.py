@@ -28,6 +28,14 @@ from setuptools.command.build_py import build_py
 from wheel.bdist_wheel import bdist_wheel
 
 
+def _project_root():
+    return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+
+def _package_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "paimon_ftindex")
+
+
 def _lib_name():
     system = platform.system()
     if system == "Darwin":
@@ -61,12 +69,12 @@ class BuildPyWithNativeLib(build_py):
     def run(self):
         src = _find_native_lib()
         if src:
-            dst = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "paimon_ftindex",
-                _lib_name(),
-            )
+            dst = os.path.join(_package_dir(), _lib_name())
             shutil.copy2(src, dst)
+        for metadata_file in ["LICENSE", "NOTICE", "DEPENDENCIES.rust.tsv"]:
+            metadata_path = os.path.join(_project_root(), metadata_file)
+            if os.path.isfile(metadata_path):
+                shutil.copy2(metadata_path, os.path.join(_package_dir(), metadata_file))
         super().run()
 
 

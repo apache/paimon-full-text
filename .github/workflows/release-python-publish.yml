@@ -94,10 +94,20 @@ jobs:
                   if name.startswith("paimon_ftindex/libpaimon_ftindex_ffi")
                   or name == "paimon_ftindex/paimon_ftindex_ffi.dll"
               ]
+              required_metadata = {
+                  "paimon_ftindex/LICENSE",
+                  "paimon_ftindex/NOTICE",
+                  "paimon_ftindex/DEPENDENCIES.rust.tsv",
+              }
               if not libs:
                   raise SystemExit(f"{wheel.name} does not contain the native FFI library")
               if not any(lib.endswith(expected_suffixes) for lib in libs):
                   raise SystemExit(f"{wheel.name} has unexpected native library names: {libs}")
+              missing_metadata = sorted(required_metadata - names)
+              if missing_metadata:
+                  raise SystemExit(
+                      f"{wheel.name} is missing license metadata: {missing_metadata}"
+                  )
               if any(name.startswith("tests/") for name in names):
                   raise SystemExit(f"{wheel.name} unexpectedly contains tests/")
           PY

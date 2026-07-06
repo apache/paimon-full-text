@@ -20,4 +20,7 @@ paimon_ftindex = [
     "libpaimon_ftindex_ffi.dylib",
     "libpaimon_ftindex_ffi.so",
     "paimon_ftindex_ffi.dll",
+    "LICENSE",
+    "NOTICE",
+    "DEPENDENCIES.rust.tsv",
 ]
