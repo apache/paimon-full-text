@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,4 +13,11 @@ license = { text = "Apache-2.0" }
 test = ["pytest"]
 
 [tool.setuptools.packages.find]
-where = ["."]
+include = ["paimon_ftindex*"]
+
+[tool.setuptools.package-data]
+paimon_ftindex = [
+    "libpaimon_ftindex_ffi.dylib",
+    "libpaimon_ftindex_ffi.so",
+    "paimon_ftindex_ffi.dll",
+]

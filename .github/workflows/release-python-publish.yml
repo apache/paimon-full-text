@@ -71,6 +71,37 @@ jobs:
             esac
           done
 
+      - name: Verify wheel native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          expected_suffixes = (".so", ".dylib", ".dll")
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if not wheels:
+              raise SystemExit("No wheels found in dist")
+
+          for wheel in wheels:
+              with ZipFile(wheel) as zf:
+                  names = set(zf.namelist())
+              libs = [
+                  name
+                  for name in names
+                  if name.startswith("paimon_ftindex/libpaimon_ftindex_ffi")
+                  or name == "paimon_ftindex/paimon_ftindex_ffi.dll"
+              ]
+              if not libs:
+                  raise SystemExit(f"{wheel.name} does not contain the native FFI library")
+              if not any(lib.endswith(expected_suffixes) for lib in libs):
+                  raise SystemExit(f"{wheel.name} has unexpected native library names: {libs}")
+              if any(name.startswith("tests/") for name in names):
+                  raise SystemExit(f"{wheel.name} unexpectedly contains tests/")
+          PY
+
       - name: Publish to TestPyPI
         if: contains(github.ref_name, '-rc')
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e
