@@ -30,7 +30,7 @@
 
     <groupId>org.apache.paimon</groupId>
     <artifactId>paimon-full-text-index</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
     <packaging>jar</packaging>
 
     <name>Apache Paimon Full Text Index Java</name>
