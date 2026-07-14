@@ -79,10 +79,10 @@ jobs:
       - name: Test Rust workspace
         run: cargo test --workspace --locked
 
-      - name: Read declared MSRV
-        id: msrv
+      - name: Read minimum supported Rust version
+        id: minimum_rust_version
         run: |
-          msrv="$(
+          minimum_rust_version="$(
             cargo metadata --locked --format-version 1 --no-deps |
               jq -er '
                 [.packages[].rust_version] | unique |
@@ -91,17 +91,17 @@ jobs:
                 end
               '
           )"
-          echo "version=${msrv}" >> "${GITHUB_OUTPUT}"
+          echo "version=${minimum_rust_version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Install declared MSRV
+      - name: Install minimum supported Rust version
         env:
-          MSRV: ${{ steps.msrv.outputs.version }}
-        run: rustup toolchain install "${MSRV}" --profile minimal --no-self-update
+          MINIMUM_RUST_VERSION: ${{ steps.minimum_rust_version.outputs.version }}
+        run: rustup toolchain install "${MINIMUM_RUST_VERSION}" --profile minimal --no-self-update
 
-      - name: Test Rust workspace with declared MSRV
+      - name: Test Rust workspace with minimum supported Rust version
         env:
-          MSRV: ${{ steps.msrv.outputs.version }}
-        run: rustup run "${MSRV}" cargo test --workspace --locked
+          MINIMUM_RUST_VERSION: ${{ steps.minimum_rust_version.outputs.version }}
+        run: rustup run "${MINIMUM_RUST_VERSION}" cargo test --workspace --locked
 
   java:
     runs-on: ubuntu-latest
