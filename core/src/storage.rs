@@ -20,6 +20,8 @@ use crate::error::{FtIndexError, Result};
 use crate::io::{ReadRequest, SeekRead, SeekWrite};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Component, Path};
 
 pub const FORMAT_MAGIC: &[u8; 8] = b"PFTIDX01";
@@ -27,6 +29,7 @@ pub const FORMAT_VERSION: u32 = 1;
 const MAX_HEADER_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ARCHIVE_READ_BATCH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARCHIVE_READ_BATCH_RANGES: usize = 64;
+const ARCHIVE_WRITE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArchiveFileEntry {
@@ -46,6 +49,45 @@ pub fn write_envelope<W: SeekWrite>(
     header: &IndexHeader,
     files: &[(String, Vec<u8>)],
 ) -> Result<()> {
+    write_envelope_header(output, header)?;
+    for (_, data) in files {
+        output.write_all(data)?;
+    }
+    output.flush()?;
+    Ok(())
+}
+
+pub(crate) fn write_envelope_from_paths<W: SeekWrite>(
+    output: &mut W,
+    header: &IndexHeader,
+    paths: &[impl AsRef<Path>],
+) -> Result<()> {
+    if header.files.len() != paths.len() {
+        return Err(FtIndexError::InvalidStorage(format!(
+            "archive header contains {} files but {} paths were provided",
+            header.files.len(),
+            paths.len()
+        )));
+    }
+
+    write_envelope_header(output, header)?;
+    let mut buffer = vec![0u8; ARCHIVE_WRITE_BUFFER_BYTES];
+    for (entry, path) in header.files.iter().zip(paths) {
+        let mut file = File::open(path)?;
+        let mut remaining = entry.length;
+        while remaining > 0 {
+            let chunk_len = usize::try_from(remaining.min(buffer.len() as u64))
+                .expect("chunk length is bounded by the archive write buffer");
+            file.read_exact(&mut buffer[..chunk_len])?;
+            output.write_all(&buffer[..chunk_len])?;
+            remaining -= chunk_len as u64;
+        }
+    }
+    output.flush()?;
+    Ok(())
+}
+
+fn write_envelope_header<W: SeekWrite>(output: &mut W, header: &IndexHeader) -> Result<()> {
     let header_json = serde_json::to_vec(header)?;
     if header_json.len() > MAX_HEADER_BYTES {
         return Err(FtIndexError::InvalidStorage(format!(
@@ -62,10 +104,6 @@ pub fn write_envelope<W: SeekWrite>(
             .to_be_bytes(),
     )?;
     output.write_all(&header_json)?;
-    for (_, data) in files {
-        output.write_all(data)?;
-    }
-    output.flush()?;
     Ok(())
 }
 

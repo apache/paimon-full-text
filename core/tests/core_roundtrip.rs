@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use paimon_ftindex_core::io::{PosWriter, ReadRequest, SeekRead, SliceReader};
+use paimon_ftindex_core::io::{PosWriter, ReadRequest, SeekRead, SeekWrite, SliceReader};
 use paimon_ftindex_core::storage::{read_header, write_envelope, ArchiveFileEntry, IndexHeader};
 use paimon_ftindex_core::{
     FullTextIndexConfig, FullTextIndexMetadata, FullTextIndexReader, FullTextIndexWriter,
@@ -145,6 +145,89 @@ impl SeekRead for CountingSliceReader {
         }
         Ok(())
     }
+}
+
+struct ChunkLimitedWriter {
+    data: Vec<u8>,
+    max_chunk_len: usize,
+}
+
+impl ChunkLimitedWriter {
+    fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            max_chunk_len: 0,
+        }
+    }
+}
+
+impl SeekWrite for ChunkLimitedWriter {
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        const MAX_CHUNK_LEN: usize = 64 * 1024;
+        if buf.len() > MAX_CHUNK_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("archive write chunk exceeds {MAX_CHUNK_LEN} bytes"),
+            ));
+        }
+        self.max_chunk_len = self.max_chunk_len.max(buf.len());
+        self.data.extend_from_slice(buf);
+        Ok(())
+    }
+}
+
+struct FailingWriter;
+
+impl SeekWrite for FailingWriter {
+    fn write_all(&mut self, _buf: &[u8]) -> io::Result<()> {
+        Err(io::Error::other("intentional output failure"))
+    }
+}
+
+#[test]
+fn failed_write_attempt_finalizes_writer() -> anyhow::Result<()> {
+    let mut writer = FullTextIndexWriter::new(FullTextIndexConfig::new())?;
+    writer.add_document(1, "Apache Paimon full text")?;
+
+    let write_error = writer
+        .write(&mut FailingWriter)
+        .expect_err("the failing output should reject the first write attempt");
+    assert!(write_error
+        .to_string()
+        .contains("intentional output failure"));
+
+    let mut retry_output = ChunkLimitedWriter::new();
+    let retry_error = writer
+        .write(&mut retry_output)
+        .expect_err("a failed write attempt should still finalize the writer");
+    assert!(retry_error.to_string().contains("already finalized"));
+
+    let add_error = writer
+        .add_document(2, "retry document")
+        .expect_err("a finalized writer should reject additional documents");
+    assert!(add_error.to_string().contains("already finalized"));
+    Ok(())
+}
+
+#[test]
+fn large_incremental_archive_is_streamed_and_searchable() -> anyhow::Result<()> {
+    let mut writer = FullTextIndexWriter::new(FullTextIndexConfig::new())?;
+    for row_id in 0..10_000 {
+        writer.add_document(
+            row_id,
+            format!("common archive text with unique marker{row_id}"),
+        )?;
+    }
+
+    let mut output = ChunkLimitedWriter::new();
+    writer.write(&mut output)?;
+
+    assert!(output.max_chunk_len <= 64 * 1024);
+    let reader = FullTextIndexReader::open(SliceReader::new(output.data))?;
+    assert_eq!(reader.metadata().document_count, 10_000);
+    let result = reader.search(match_query("marker8191", "text"), 10)?;
+    assert_eq!(result.row_ids, vec![8191]);
+    Ok(())
 }
 
 #[test]

@@ -20,14 +20,14 @@ use crate::config::{FullTextIndexConfig, FullTextIndexMetadata};
 use crate::error::{FtIndexError, Result};
 use crate::io::{FullTextReadMetrics, ReadMetrics, ReadRequest, SeekRead, SeekWrite};
 use crate::query::{BooleanOccur, MatchOperator, QuerySpec};
-use crate::storage::{read_header, write_envelope, ArchiveFileEntry, IndexHeader};
+use crate::storage::{read_header, write_envelope_from_paths, ArchiveFileEntry, IndexHeader};
 use crate::tokenizer::{TokenizerConfig, TokenizerKind};
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use roaring::RoaringTreemap;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tantivy::collector::{FilterCollector, TopDocs};
 use tantivy::query::{
@@ -40,12 +40,13 @@ use tantivy::tokenizer::{
     SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer, TokenStream, WhitespaceTokenizer,
 };
 use tantivy::{
-    DocId, DocSet, Index, Score, SegmentReader, SingleSegmentIndexWriter, TantivyDocument, Term,
-    TERMINATED,
+    DocId, DocSet, Index, IndexWriter, Score, SegmentReader, TantivyDocument, Term, TERMINATED,
 };
 use tantivy_fst::Automaton;
 use tantivy_jieba::JiebaTokenizer;
 use tempfile::TempDir;
+
+const INDEX_WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FullTextSearchResult {
@@ -55,7 +56,15 @@ pub struct FullTextSearchResult {
 
 pub struct FullTextIndexWriter {
     config: FullTextIndexConfig,
-    documents: Vec<FullTextDocument>,
+    state: Option<FullTextIndexWriterState>,
+    row_id_field: tantivy::schema::Field,
+    text_fields: HashMap<String, tantivy::schema::Field>,
+    document_count: u64,
+}
+
+struct FullTextIndexWriterState {
+    index_writer: IndexWriter<TantivyDocument>,
+    temp_dir: TempDir,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,9 +76,24 @@ pub struct FullTextDocument {
 impl FullTextIndexWriter {
     pub fn new(config: FullTextIndexConfig) -> Result<Self> {
         config.validate()?;
+        let temp_dir = TempDir::new()?;
+        let schema = build_schema(&config);
+        let mut index = Index::create_in_dir(temp_dir.path(), schema.clone())?;
+        register_tokenizer(&mut index, &config.tokenizer)?;
+        let row_id_field = schema
+            .get_field(&config.row_id_field)
+            .map_err(|_| FtIndexError::InvalidStorage("missing row_id field".to_string()))?;
+        let text_fields = text_field_map(&schema, &config)?;
+        let index_writer = index.writer_with_num_threads(1, INDEX_WRITER_MEMORY_BUDGET_BYTES)?;
         Ok(Self {
             config,
-            documents: Vec::new(),
+            state: Some(FullTextIndexWriterState {
+                index_writer,
+                temp_dir,
+            }),
+            row_id_field,
+            text_fields,
+            document_count: 0,
         })
     }
 
@@ -89,72 +113,79 @@ impl FullTextIndexWriter {
                 "row id must be non-negative, got {row_id}"
             )));
         }
-        let fields = fields
-            .into_iter()
-            .map(|(name, text)| (name.into(), text.into()))
-            .collect::<Vec<_>>();
-        if fields.is_empty() {
+        let state = self.state.as_ref().ok_or_else(|| {
+            FtIndexError::InvalidStorage("full-text index writer is already finalized".to_string())
+        })?;
+        let next_document_count = self.document_count.checked_add(1).ok_or_else(|| {
+            FtIndexError::InvalidStorage("full-text document count overflow".to_string())
+        })?;
+        let mut doc = TantivyDocument::new();
+        doc.add_u64(self.row_id_field, row_id as u64);
+        let mut has_text_field = false;
+        for (name, text) in fields {
+            let name = name.into();
+            let text = text.into();
+            validate_indexed_field(&self.config, &name)?;
+            let text_field = self.text_fields.get(&name).ok_or_else(|| {
+                FtIndexError::InvalidStorage(format!(
+                    "document field '{name}' is not configured for this index"
+                ))
+            })?;
+            doc.add_text(*text_field, &text);
+            has_text_field = true;
+        }
+        if !has_text_field {
             return Err(FtIndexError::InvalidStorage(
                 "document must contain at least one text field".to_string(),
             ));
         }
-        for (name, _) in &fields {
-            validate_indexed_field(&self.config, name)?;
-        }
-        self.documents.push(FullTextDocument { row_id, fields });
+        state.index_writer.add_document(doc)?;
+        self.document_count = next_document_count;
         Ok(())
     }
 
+    /// Finalizes this writer and streams the completed index archive to `output`.
+    ///
+    /// A write attempt is single-use regardless of whether it succeeds: the active Tantivy writer
+    /// is consumed before commit and serialization begin. After this method is called, subsequent
+    /// calls to `write`, `add_document`, or `add_document_fields` return an already-finalized
+    /// error. If `output` returns an error, it may contain a partial archive and must be discarded;
+    /// retrying requires a new writer and re-adding the documents.
     pub fn write<W: SeekWrite>(&mut self, output: &mut W) -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let schema = build_schema(&self.config);
-        let mut index = Index::create_in_dir(temp_dir.path(), schema.clone())?;
-        register_tokenizer(&mut index, &self.config.tokenizer)?;
-        let row_id_field = schema
-            .get_field(&self.config.row_id_field)
-            .map_err(|_| FtIndexError::InvalidStorage("missing row_id field".to_string()))?;
-        let text_fields = text_field_map(&schema, &self.config)?;
-
-        {
-            let mut index_writer =
-                SingleSegmentIndexWriter::<TantivyDocument>::new(index, 50_000_000)?;
-            for document in &self.documents {
-                let mut doc = TantivyDocument::new();
-                doc.add_u64(row_id_field, document.row_id as u64);
-                for (name, text) in &document.fields {
-                    let text_field = text_fields.get(name).ok_or_else(|| {
-                        FtIndexError::InvalidStorage(format!(
-                            "document field '{name}' is not configured for this index"
-                        ))
-                    })?;
-                    doc.add_text(*text_field, text);
-                }
-                index_writer.add_document(doc)?;
-            }
-            index_writer.finalize()?;
-        }
+        let state = self.state.take().ok_or_else(|| {
+            FtIndexError::InvalidStorage("full-text index writer is already finalized".to_string())
+        })?;
+        let FullTextIndexWriterState {
+            mut index_writer,
+            temp_dir,
+        } = state;
+        index_writer.commit()?;
+        index_writer.wait_merging_threads()?;
 
         let files = collect_index_files(temp_dir.path())?;
         let mut offset = 0u64;
         let mut entries = Vec::with_capacity(files.len());
-        for (name, data) in &files {
+        for file in &files {
             entries.push(ArchiveFileEntry {
-                name: name.clone(),
+                name: file.name.clone(),
                 offset,
-                length: data.len() as u64,
+                length: file.length,
             });
-            offset += data.len() as u64;
+            offset = offset.checked_add(file.length).ok_or_else(|| {
+                FtIndexError::InvalidStorage("full-text archive size overflow".to_string())
+            })?;
         }
 
         let header = IndexHeader {
             metadata: FullTextIndexMetadata {
                 config: self.config.clone(),
-                document_count: self.documents.len() as u64,
+                document_count: self.document_count,
                 tantivy_version: tantivy::version().to_string(),
             },
             files: entries,
         };
-        write_envelope(output, &header, &files)
+        let paths = files.iter().map(|file| &file.path).collect::<Vec<_>>();
+        write_envelope_from_paths(output, &header, &paths)
     }
 }
 
@@ -456,7 +487,13 @@ fn validate_indexed_field(config: &FullTextIndexConfig, field: &str) -> Result<(
     }
 }
 
-fn collect_index_files(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+struct IndexFile {
+    name: String,
+    path: PathBuf,
+    length: u64,
+}
+
+fn collect_index_files(path: &Path) -> Result<Vec<IndexFile>> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(path)? {
         let entry = entry?;
@@ -475,7 +512,8 @@ fn collect_index_files(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
         if name.ends_with(".lock") {
             continue;
         }
-        files.push((name, fs::read(path)?));
+        let length = fs::metadata(&path)?.len();
+        files.push(IndexFile { name, path, length });
     }
     Ok(files)
 }
@@ -1176,5 +1214,31 @@ impl Automaton for PrefixedDfaAutomaton {
             Some(_) => None,
         };
         (dfa_state, prefix_state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn added_documents_are_not_retained_as_source_strings() -> Result<()> {
+        let mut writer = FullTextIndexWriter::new(FullTextIndexConfig::new())?;
+
+        for row_id in 0..10_000 {
+            writer.add_document(row_id, format!("document {row_id} with unique source text"))?;
+        }
+
+        // Keep this exhaustive: the writer state must not grow a source-document collection.
+        let FullTextIndexWriter {
+            config: _,
+            state,
+            row_id_field: _,
+            text_fields: _,
+            document_count,
+        } = writer;
+        assert!(state.is_some());
+        assert_eq!(document_count, 10_000);
+        Ok(())
     }
 }
