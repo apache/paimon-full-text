@@ -23,7 +23,7 @@ resolver = "2"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/apache/paimon-full-text"
-rust-version = "1.86"
+rust-version = "1.90"
 
 [workspace.dependencies]
 anyhow = "1"

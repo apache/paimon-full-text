@@ -63,21 +63,45 @@ jobs:
           tool: cargo-deny@0.19.0
 
       - name: Check dependency licenses (Apache-compatible)
-        run: cargo deny check licenses
+        run: cargo deny --locked check licenses
 
       - name: Verify Rust dependency metadata
         run: |
-          cargo deny list -f tsv -t 0.6 > /tmp/DEPENDENCIES.rust.tsv
+          cargo deny --locked list -f tsv -t 0.6 > /tmp/DEPENDENCIES.rust.tsv
           diff -u DEPENDENCIES.rust.tsv /tmp/DEPENDENCIES.rust.tsv
 
       - name: Format
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --workspace -- -D warnings
+        run: cargo clippy --all-targets --workspace --locked -- -D warnings
 
       - name: Test Rust workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+
+      - name: Read minimum supported Rust version
+        id: minimum_rust_version
+        run: |
+          minimum_rust_version="$(
+            cargo metadata --locked --format-version 1 --no-deps |
+              jq -er '
+                [.packages[].rust_version] | unique |
+                if length == 1 and .[0] != null then .[0]
+                else error("workspace packages must declare one common rust-version")
+                end
+              '
+          )"
+          echo "version=${minimum_rust_version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install minimum supported Rust version
+        env:
+          MINIMUM_RUST_VERSION: ${{ steps.minimum_rust_version.outputs.version }}
+        run: rustup toolchain install "${MINIMUM_RUST_VERSION}" --profile minimal --no-self-update
+
+      - name: Test Rust workspace with minimum supported Rust version
+        env:
+          MINIMUM_RUST_VERSION: ${{ steps.minimum_rust_version.outputs.version }}
+        run: rustup run "${MINIMUM_RUST_VERSION}" cargo test --workspace --locked
 
   java:
     runs-on: ubuntu-latest
