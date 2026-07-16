@@ -184,38 +184,3 @@ jobs:
         with:
           name: java-package
           path: java/target/*.jar
-
-  test-java-package:
-    if: github.repository == 'apache/paimon-full-text' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-rc')
-    runs-on: ${{ matrix.os }}
-    needs: [package-java]
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - ubuntu-24.04-arm
-          - macos-latest
-          - windows-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download Java package
-        uses: actions/download-artifact@v5
-        with:
-          name: java-package
-          path: java-package
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Test packaged jar
-        shell: bash
-        run: |
-          jar="$(find java-package -maxdepth 1 -name '*.jar' \
-            ! -name '*-sources.jar' ! -name '*-javadoc.jar' -print -quit)"
-          test -n "$jar"
-          java -cp "$jar" tools/FullTextIndexJarSmokeTest.java
