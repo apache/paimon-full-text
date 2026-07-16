@@ -34,14 +34,12 @@ EXEMPT_FILES = {
     "DEPENDENCIES.rust.tsv",
     "LICENSE",
     "NOTICE",
+    # Generated binary-distribution license texts.
+    "licenses/java/THIRD-PARTY-LICENSES.html",
+    "licenses/python/THIRD-PARTY-LICENSES.html",
     # Golden test data; adding comments changes the fixture format.
     "core/tests/golden/storage_v1_envelope.hex",
 }
-
-# These files are either complete third-party license texts or fragments used
-# to assemble binary-distribution licensing metadata. Adding an ASF header to
-# them would alter or obscure the original licensing terms.
-EXEMPT_PREFIXES = ("licenses/",)
 
 
 def repo_root() -> Path:
@@ -69,7 +67,7 @@ def main() -> int:
     missing = []
 
     for file_name in tracked_files(root):
-        if file_name in EXEMPT_FILES or file_name.startswith(EXEMPT_PREFIXES):
+        if file_name in EXEMPT_FILES:
             continue
 
         path = root / file_name

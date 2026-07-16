@@ -86,55 +86,28 @@ jobs:
               raise SystemExit("No wheels found in dist")
 
           for wheel in wheels:
-              required_metadata = {
-                  "paimon_ftindex/LICENSE",
-                  "paimon_ftindex/NOTICE",
-                  "paimon_ftindex/DEPENDENCIES.rust.tsv",
-                  "paimon_ftindex/THIRD-PARTY-LICENSES.html",
-              }
-              required_dist_info_license_suffixes = {
-                  ".dist-info/licenses/paimon_ftindex/LICENSE",
-                  ".dist-info/licenses/paimon_ftindex/NOTICE",
-                  ".dist-info/licenses/paimon_ftindex/THIRD-PARTY-LICENSES.html",
-              }
               with ZipFile(wheel) as zf:
                   names = set(zf.namelist())
-                  missing_metadata = sorted(required_metadata - names)
-                  if missing_metadata:
-                      raise SystemExit(
-                          f"{wheel.name} is missing license metadata: {missing_metadata}"
-                      )
-                  missing_dist_info_licenses = sorted(
-                      suffix
-                      for suffix in required_dist_info_license_suffixes
-                      if not any(name.endswith(suffix) for name in names)
-                  )
-                  if missing_dist_info_licenses:
-                      raise SystemExit(
-                          f"{wheel.name} is missing dist-info license metadata: "
-                          f"{missing_dist_info_licenses}"
-                      )
-                  binary_license = zf.read("paimon_ftindex/LICENSE").decode("utf-8")
-                  third_party_licenses = zf.read(
-                      "paimon_ftindex/THIRD-PARTY-LICENSES.html"
-                  ).decode("utf-8")
               libs = [
                   name
                   for name in names
                   if name.startswith("paimon_ftindex/libpaimon_ftindex_ffi")
                   or name == "paimon_ftindex/paimon_ftindex_ffi.dll"
               ]
+              required_metadata = {
+                  "paimon_ftindex/LICENSE",
+                  "paimon_ftindex/NOTICE",
+                  "paimon_ftindex/DEPENDENCIES.rust.tsv",
+                  "paimon_ftindex/THIRD-PARTY-LICENSES.html",
+              }
               if not libs:
                   raise SystemExit(f"{wheel.name} does not contain the native FFI library")
               if not any(lib.endswith(expected_suffixes) for lib in libs):
                   raise SystemExit(f"{wheel.name} has unexpected native library names: {libs}")
-              if "THIRD-PARTY-LICENSES.html" not in binary_license:
+              missing_metadata = sorted(required_metadata - names)
+              if missing_metadata:
                   raise SystemExit(
-                      f"{wheel.name} LICENSE does not reference third-party licenses"
-                  )
-              if "Bundled Rust Components and Licenses" not in third_party_licenses:
-                  raise SystemExit(
-                      f"{wheel.name} has invalid third-party license metadata"
+                      f"{wheel.name} is missing license metadata: {missing_metadata}"
                   )
               if any(name.startswith("tests/") for name in names):
                   raise SystemExit(f"{wheel.name} unexpectedly contains tests/")

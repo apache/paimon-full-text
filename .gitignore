@@ -37,13 +37,6 @@ python/dist/
 python/build/
 python/target/
 **/.pytest_cache/
-/python/paimon_ftindex/DEPENDENCIES.rust.tsv
-/python/paimon_ftindex/LICENSE
-/python/paimon_ftindex/NOTICE
-/python/paimon_ftindex/THIRD-PARTY-LICENSES.html
-/python/paimon_ftindex/libpaimon_ftindex_ffi.dylib
-/python/paimon_ftindex/libpaimon_ftindex_ffi.so
-/python/paimon_ftindex/paimon_ftindex_ffi.dll
 
 # IDE
 .idea/

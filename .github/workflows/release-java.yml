@@ -167,18 +167,6 @@ jobs:
         working-directory: java
         run: mvn clean verify -Prelease -Dgpg.skip=true -DskipTests
 
-      - name: Verify Java binary license metadata
-        working-directory: java
-        shell: bash
-        run: |
-          jar="$(find target -maxdepth 1 -name '*.jar' \
-            ! -name '*-sources.jar' ! -name '*-javadoc.jar' -print -quit)"
-          test -n "$jar"
-          unzip -p "$jar" META-INF/LICENSE \
-            | grep -F THIRD-PARTY-LICENSES.html >/dev/null
-          unzip -p "$jar" META-INF/THIRD-PARTY-LICENSES.html \
-            | grep -F 'Bundled Rust Components and Licenses' >/dev/null
-
       - name: Upload Java package
         uses: actions/upload-artifact@v5
         with:

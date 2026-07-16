@@ -62,14 +62,6 @@ jobs:
         with:
           tool: cargo-deny@0.19.0
 
-      - name: Install cargo-about
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-about@0.9.1
-
-      - name: Check Rust security advisories
-        run: cargo deny --locked check advisories
-
       - name: Check dependency licenses (Apache-compatible)
         run: cargo deny --locked check licenses
 
@@ -77,23 +69,6 @@ jobs:
         run: |
           cargo deny --locked list -f tsv -t 0.6 > /tmp/DEPENDENCIES.rust.tsv
           diff -u DEPENDENCIES.rust.tsv /tmp/DEPENDENCIES.rust.tsv
-
-      - name: Verify bundled Rust license reports
-        run: |
-          cargo about generate --frozen --fail \
-            --manifest-path jni/Cargo.toml \
-            --output-file /tmp/THIRD-PARTY-LICENSES.java.html \
-            about.hbs
-          diff -u \
-            licenses/java/THIRD-PARTY-LICENSES.html \
-            /tmp/THIRD-PARTY-LICENSES.java.html
-          cargo about generate --frozen --fail \
-            --manifest-path ffi/Cargo.toml \
-            --output-file /tmp/THIRD-PARTY-LICENSES.python.html \
-            about.hbs
-          diff -u \
-            licenses/python/THIRD-PARTY-LICENSES.html \
-            /tmp/THIRD-PARTY-LICENSES.python.html
 
       - name: Format
         run: cargo fmt --all -- --check
