@@ -85,6 +85,46 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>assemble-binary-license-metadata</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <!-- Keep target/classes unchanged so the Maven sources jar
+                                     describes its own contents. Only the binary jar uses this
+                                     copy with the bundled Rust dependency licenses. -->
+                                <delete dir="${project.build.directory}/binary-classes"/>
+                                <copy todir="${project.build.directory}/binary-classes">
+                                    <fileset dir="${project.build.outputDirectory}"/>
+                                </copy>
+                                <delete file="${project.build.directory}/binary-classes/META-INF/LICENSE"/>
+                                <concat destfile="${project.build.directory}/binary-classes/META-INF/LICENSE">
+                                    <filelist dir="${project.basedir}/.." files="LICENSE"/>
+                                    <filelist dir="${project.basedir}/../licenses"
+                                              files="BINARY-LICENSE-APPENDIX"/>
+                                </concat>
+                                <copy file="${project.basedir}/../licenses/java/THIRD-PARTY-LICENSES.html"
+                                      todir="${project.build.directory}/binary-classes/META-INF"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <classesDirectory>${project.build.directory}/binary-classes</classesDirectory>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
                 <configuration>

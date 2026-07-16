@@ -15,41 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Rust
-/target/
-
-# Java
-/java/target/
-java/src/main/resources/native/
-*.class
-
-# C
-c/build/
-
-# C++
-cpp/build/
-
-# Python
-**/__pycache__/
-*.py[cod]
-**/*.egg-info/
-python/dist/
-python/build/
-python/target/
-**/.pytest_cache/
-/python/paimon_ftindex/DEPENDENCIES.rust.tsv
-/python/paimon_ftindex/LICENSE
-/python/paimon_ftindex/NOTICE
-/python/paimon_ftindex/THIRD-PARTY-LICENSES.html
-/python/paimon_ftindex/libpaimon_ftindex_ffi.dylib
-/python/paimon_ftindex/libpaimon_ftindex_ffi.so
-/python/paimon_ftindex/paimon_ftindex_ffi.dll
-
-# IDE
-.idea/
-*.iml
-.vscode/
-
-# OS
-.DS_Store
-Thumbs.db
+# These files preserve whitespace from generated or upstream license data.
+DEPENDENCIES.rust.tsv -whitespace
+licenses/** -whitespace linguist-generated=true

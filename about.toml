@@ -15,41 +15,30 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Rust
-/target/
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
 
-# Java
-/java/target/
-java/src/main/resources/native/
-*.class
+# Generate the union of licenses required by every native binary shipped in
+# the Java jar and Python wheels.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
 
-# C
-c/build/
+# Build and development tools are not linked into the distributed libraries.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
 
-# C++
-cpp/build/
-
-# Python
-**/__pycache__/
-*.py[cod]
-**/*.egg-info/
-python/dist/
-python/build/
-python/target/
-**/.pytest_cache/
-/python/paimon_ftindex/DEPENDENCIES.rust.tsv
-/python/paimon_ftindex/LICENSE
-/python/paimon_ftindex/NOTICE
-/python/paimon_ftindex/THIRD-PARTY-LICENSES.html
-/python/paimon_ftindex/libpaimon_ftindex_ffi.dylib
-/python/paimon_ftindex/libpaimon_ftindex_ffi.so
-/python/paimon_ftindex/paimon_ftindex_ffi.dll
-
-# IDE
-.idea/
-*.iml
-.vscode/
-
-# OS
-.DS_Store
-Thumbs.db
+# Generation uses cargo-about's --frozen mode so the checked-in report is
+# reproducible and does not depend on external license databases.

@@ -40,4 +40,5 @@ paimon_ftindex = [
     "LICENSE",
     "NOTICE",
     "DEPENDENCIES.rust.tsv",
+    "THIRD-PARTY-LICENSES.html",
 ]

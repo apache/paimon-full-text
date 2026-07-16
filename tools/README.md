@@ -21,6 +21,38 @@
 
 This directory contains helper scripts used by release managers and committers.
 
+## Binary dependency license metadata
+
+The Java jar and Python wheels statically link Rust dependencies, so each binary
+distribution includes a generated `THIRD-PARTY-LICENSES.html` containing the
+bundled component versions, copyright notices, and complete license texts. The
+Java and Python reports are generated separately so each one describes the
+dependency graph that is actually compiled into that artifact.
+
+The wheel stores the binary license metadata both with the Python package and
+under its standard `.dist-info/licenses/` directory. The jar stores it under
+`META-INF/`.
+
+Install the pinned generator and refresh the reports after changing
+`Cargo.lock` or Rust dependencies:
+
+```bash
+cargo install --locked cargo-about --version 0.9.1 --features cli
+cargo deny --locked list -f tsv -t 0.6 > DEPENDENCIES.rust.tsv
+cargo about generate --locked --fail \
+  --manifest-path jni/Cargo.toml \
+  --output-file licenses/java/THIRD-PARTY-LICENSES.html \
+  about.hbs
+cargo about generate --locked --fail \
+  --manifest-path ffi/Cargo.toml \
+  --output-file licenses/python/THIRD-PARTY-LICENSES.html \
+  about.hbs
+```
+
+CI regenerates and compares all three reports. It also runs the RustSec
+advisory check, so a dependency update cannot silently leave the binary license
+metadata stale or introduce a known vulnerability.
+
 ## Java staging deploy
 
 `deploy_java_staging.sh` deploys the Java release candidate artifacts to Apache
@@ -169,6 +201,9 @@ It does not sign and does not deploy to Nexus. It verifies:
 - native library file formats match their target platforms;
 - the Java jar, sources jar, and javadoc jar are produced;
 - the Java jar contains all four native library entries.
+- the Java jar contains a binary-specific `LICENSE` that points to bundled
+  third-party license texts;
+- the Maven sources jar does not contain binary-only license metadata.
 
 ### Deploy to Nexus staging
 

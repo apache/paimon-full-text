@@ -36,6 +36,10 @@ def _package_dir():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "paimon_ftindex")
 
 
+def _license_dir():
+    return os.path.join(_project_root(), "licenses")
+
+
 def _lib_name():
     system = platform.system()
     if system == "Darwin":
@@ -65,16 +69,34 @@ def _find_native_lib():
     return None
 
 
+def _prepare_binary_metadata():
+    binary_license = os.path.join(_package_dir(), "LICENSE")
+    with open(binary_license, "wb") as output:
+        for license_part in [
+            os.path.join(_project_root(), "LICENSE"),
+            os.path.join(_license_dir(), "BINARY-LICENSE-APPENDIX"),
+        ]:
+            with open(license_part, "rb") as input_:
+                shutil.copyfileobj(input_, output)
+
+    for metadata_file in ["NOTICE", "DEPENDENCIES.rust.tsv"]:
+        shutil.copy2(
+            os.path.join(_project_root(), metadata_file),
+            os.path.join(_package_dir(), metadata_file),
+        )
+    shutil.copy2(
+        os.path.join(_license_dir(), "python", "THIRD-PARTY-LICENSES.html"),
+        os.path.join(_package_dir(), "THIRD-PARTY-LICENSES.html"),
+    )
+
+
 class BuildPyWithNativeLib(build_py):
     def run(self):
         src = _find_native_lib()
         if src:
             dst = os.path.join(_package_dir(), _lib_name())
             shutil.copy2(src, dst)
-        for metadata_file in ["LICENSE", "NOTICE", "DEPENDENCIES.rust.tsv"]:
-            metadata_path = os.path.join(_project_root(), metadata_file)
-            if os.path.isfile(metadata_path):
-                shutil.copy2(metadata_path, os.path.join(_package_dir(), metadata_file))
+        _prepare_binary_metadata()
         super().run()
 
 
@@ -97,7 +119,14 @@ class BinaryDistribution(Distribution):
         return True
 
 
+_prepare_binary_metadata()
+
 setup(
     cmdclass={"build_py": BuildPyWithNativeLib, "bdist_wheel": PlatformWheel},
     distclass=BinaryDistribution,
+    license_files=[
+        "paimon_ftindex/LICENSE",
+        "paimon_ftindex/NOTICE",
+        "paimon_ftindex/THIRD-PARTY-LICENSES.html",
+    ],
 )

@@ -225,7 +225,7 @@ else
 fi
 
 check_java_package_inputs_clean() {
-  local paths=(java DEPENDENCIES.rust.tsv)
+  local paths=(java DEPENDENCIES.rust.tsv about.hbs about.toml licenses)
   local untracked
 
   if ! git -C "$REPO_DIR" diff --quiet -- "${paths[@]}" ||
@@ -507,11 +507,35 @@ validate_maven_artifacts() {
     native/macos/aarch64/libpaimon_ftindex_jni.dylib \
     native/windows/x86_64/paimon_ftindex_jni.dll
   do
-    if ! jar tf "$jar_file" | grep -qx "$native_entry"; then
+    if ! jar tf "$jar_file" | grep -Fx "$native_entry" >/dev/null; then
       echo "Packaged jar is missing native entry: $native_entry" >&2
       exit 1
     fi
   done
+
+  for metadata_entry in \
+    META-INF/LICENSE \
+    META-INF/NOTICE \
+    META-INF/DEPENDENCIES.rust.tsv \
+    META-INF/THIRD-PARTY-LICENSES.html
+  do
+    if ! jar tf "$jar_file" | grep -Fx "$metadata_entry" >/dev/null; then
+      echo "Packaged jar is missing license metadata: $metadata_entry" >&2
+      exit 1
+    fi
+  done
+
+  if ! unzip -p "$jar_file" META-INF/LICENSE |
+       grep -F 'THIRD-PARTY-LICENSES.html' >/dev/null; then
+    echo "Packaged jar LICENSE does not reference third-party license texts" >&2
+    exit 1
+  fi
+
+  if jar tf "$sources_jar" |
+     grep -Fx 'META-INF/THIRD-PARTY-LICENSES.html' >/dev/null; then
+    echo "Sources jar unexpectedly contains binary-only license metadata" >&2
+    exit 1
+  fi
 }
 
 if [[ "$DRY_RUN" == "true" ]]; then

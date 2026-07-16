@@ -38,6 +38,11 @@ EXEMPT_FILES = {
     "core/tests/golden/storage_v1_envelope.hex",
 }
 
+# These files are either complete third-party license texts or fragments used
+# to assemble binary-distribution licensing metadata. Adding an ASF header to
+# them would alter or obscure the original licensing terms.
+EXEMPT_PREFIXES = ("licenses/",)
+
 
 def repo_root() -> Path:
     return Path(
@@ -64,7 +69,7 @@ def main() -> int:
     missing = []
 
     for file_name in tracked_files(root):
-        if file_name in EXEMPT_FILES:
+        if file_name in EXEMPT_FILES or file_name.startswith(EXEMPT_PREFIXES):
             continue
 
         path = root / file_name
