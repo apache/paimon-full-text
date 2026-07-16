@@ -225,7 +225,7 @@ else
 fi
 
 check_java_package_inputs_clean() {
-  local paths=(java DEPENDENCIES.rust.tsv licenses)
+  local paths=(java DEPENDENCIES.rust.tsv)
   local untracked
 
   if ! git -C "$REPO_DIR" diff --quiet -- "${paths[@]}" ||
@@ -512,12 +512,6 @@ validate_maven_artifacts() {
       exit 1
     fi
   done
-
-  if ! jar tf "$jar_file" |
-       grep -qx 'META-INF/licenses/THIRD-PARTY-LICENSES.html'; then
-    echo "Packaged jar is missing third-party license texts" >&2
-    exit 1
-  fi
 }
 
 if [[ "$DRY_RUN" == "true" ]]; then

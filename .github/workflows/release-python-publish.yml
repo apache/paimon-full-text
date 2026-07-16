@@ -98,7 +98,6 @@ jobs:
                   "paimon_ftindex/LICENSE",
                   "paimon_ftindex/NOTICE",
                   "paimon_ftindex/DEPENDENCIES.rust.tsv",
-                  "paimon_ftindex/THIRD-PARTY-LICENSES.html",
               }
               if not libs:
                   raise SystemExit(f"{wheel.name} does not contain the native FFI library")

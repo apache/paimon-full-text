@@ -35,8 +35,8 @@ EXEMPT_FILES = {
     "LICENSE",
     "NOTICE",
     # Generated binary-distribution license texts.
-    "licenses/java/THIRD-PARTY-LICENSES.html",
-    "licenses/python/THIRD-PARTY-LICENSES.html",
+    "java/src/main/resources/META-INF/licenses/THIRD-PARTY-LICENSES.html",
+    "python/paimon_ftindex/THIRD-PARTY-LICENSES.html",
     # Golden test data; adding comments changes the fixture format.
     "core/tests/golden/storage_v1_envelope.hex",
 }

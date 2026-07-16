@@ -81,13 +81,6 @@
                 </includes>
                 <targetPath>META-INF</targetPath>
             </resource>
-            <resource>
-                <directory>${project.basedir}/../licenses/java</directory>
-                <includes>
-                    <include>THIRD-PARTY-LICENSES.html</include>
-                </includes>
-                <targetPath>META-INF/licenses</targetPath>
-            </resource>
         </resources>
         <plugins>
             <plugin>

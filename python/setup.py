@@ -71,20 +71,10 @@ class BuildPyWithNativeLib(build_py):
         if src:
             dst = os.path.join(_package_dir(), _lib_name())
             shutil.copy2(src, dst)
-
         for metadata_file in ["LICENSE", "NOTICE", "DEPENDENCIES.rust.tsv"]:
             metadata_path = os.path.join(_project_root(), metadata_file)
             if os.path.isfile(metadata_path):
                 shutil.copy2(metadata_path, os.path.join(_package_dir(), metadata_file))
-        shutil.copy2(
-            os.path.join(
-                _project_root(),
-                "licenses",
-                "python",
-                "THIRD-PARTY-LICENSES.html",
-            ),
-            os.path.join(_package_dir(), "THIRD-PARTY-LICENSES.html"),
-        )
         super().run()
 
 
