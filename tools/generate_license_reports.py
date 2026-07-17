@@ -23,6 +23,7 @@ import argparse
 import difflib
 import html
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,16 @@ class BundledComponent:
     component_url: str
     license_name: str
     anchor: str
+    license_from_repository: bool = False
+
+
+@dataclass(frozen=True)
+class LicenseCorrection:
+    crates: tuple[str, ...]
+    license_crate: str
+    license_path: str
+    license_name: str
+    anchor: str
 
 
 BUNDLED_COMPONENTS = (
@@ -81,6 +92,52 @@ BUNDLED_COMPONENTS = (
         license_name="Unicode Data Files and Software License",
         anchor="bundled-regex-syntax-unicode",
     ),
+    BundledComponent(
+        crate="jieba-rs",
+        license_path="third-party-licenses/python-jieba-v0.39.LICENSE",
+        component="embedded Python Jieba dictionary and HMM data",
+        component_url="https://github.com/fxsjy/jieba/tree/v0.39",
+        license_name="MIT License",
+        anchor="bundled-python-jieba-data",
+        license_from_repository=True,
+    ),
+)
+
+
+LICENSE_CORRECTIONS = (
+    LicenseCorrection(
+        crates=("jieba-macros", "jieba-rs"),
+        license_crate="",
+        license_path="third-party-licenses/jieba-rs-v0.10.1.LICENSE",
+        license_name="MIT License (jieba-rs workspace)",
+        anchor="mit-jieba-rs-workspace",
+    ),
+    LicenseCorrection(
+        crates=(
+            "ownedbytes",
+            "tantivy-bitpacker",
+            "tantivy-columnar",
+            "tantivy-common",
+            "tantivy-query-grammar",
+            "tantivy-sstable",
+            "tantivy-stacker",
+            "tantivy-tokenizer-api",
+        ),
+        license_crate="tantivy",
+        license_path="LICENSE",
+        license_name="MIT License (Tantivy workspace)",
+        anchor="mit-tantivy-workspace",
+    ),
+)
+
+PLACEHOLDER_MIT_MARKER = (
+    "Copyright (c) &lt;year&gt; &lt;copyright holders&gt;"
+)
+LICENSE_PLACEHOLDERS = (
+    "&lt;year&gt;",
+    "&lt;copyright holders&gt;",
+    "<year>",
+    "<copyright holders>",
 )
 
 
@@ -184,7 +241,99 @@ def package_by_name(metadata: dict, crate_name: str) -> dict:
     return matches[0]
 
 
-def bundled_component_html(base_report: str, metadata: dict) -> str:
+def correction_license_file(
+    root: Path, metadata: dict, correction: LicenseCorrection
+) -> Path:
+    if not correction.license_crate:
+        return root / correction.license_path
+    license_package = package_by_name(metadata, correction.license_crate)
+    return Path(license_package["manifest_path"]).parent / correction.license_path
+
+
+def license_correction_html(
+    root: Path, metadata: dict, correction: LicenseCorrection
+) -> str:
+    used_by = []
+    for crate_name in correction.crates:
+        package = package_by_name(metadata, crate_name)
+        repository = package.get("repository") or (
+            f"https://crates.io/crates/{crate_name}"
+        )
+        used_by.append(
+            f'                    <li><a href="{html.escape(repository, quote=True)}">'
+            f"{html.escape(crate_name)} {html.escape(package['version'])}</a></li>"
+        )
+
+    license_file = correction_license_file(root, metadata, correction)
+    if not license_file.is_file():
+        raise RuntimeError(f"corrected license file is missing: {license_file}")
+    license_text = license_file.read_text(encoding="utf-8")
+
+    return "\n".join(
+        [
+            '            <li class="license corrected-workspace-license">',
+            f'                <h3 id="{html.escape(correction.anchor)}">'
+            f"{html.escape(correction.license_name)}</h3>",
+            "                <h4>Used by:</h4>",
+            '                <ul class="license-used-by">',
+            *used_by,
+            "                </ul>",
+            f'                <pre class="license-text">{html.escape(license_text)}</pre>',
+            "            </li>",
+        ]
+    )
+
+
+def replace_placeholder_mit_license(
+    root: Path, base_report: str, metadata: dict
+) -> str:
+    if base_report.count(PLACEHOLDER_MIT_MARKER) != 1:
+        raise RuntimeError(
+            "expected exactly one generic MIT copyright placeholder in "
+            "cargo-about output"
+        )
+
+    marker_index = base_report.index(PLACEHOLDER_MIT_MARKER)
+    entry_start = base_report.rfind(
+        '            <li class="license">', 0, marker_index
+    )
+    entry_end = base_report.find("            </li>", marker_index)
+    if entry_start == -1 or entry_end == -1:
+        raise RuntimeError("could not locate the generic MIT license entry")
+    entry_end += len("            </li>")
+    placeholder_entry = base_report[entry_start:entry_end]
+
+    actual_crates = set(
+        re.findall(
+            r'<li><a href="[^"]+">([A-Za-z0-9_-]+) [^<]+</a></li>',
+            placeholder_entry,
+        )
+    )
+    expected_crates = {
+        crate_name
+        for correction in LICENSE_CORRECTIONS
+        for crate_name in correction.crates
+    }
+    if actual_crates != expected_crates:
+        raise RuntimeError(
+            "generic MIT placeholder dependency set changed: expected "
+            f"{sorted(expected_crates)}, found {sorted(actual_crates)}"
+        )
+
+    replacement = "\n".join(
+        license_correction_html(root, metadata, correction)
+        for correction in LICENSE_CORRECTIONS
+    )
+    result = base_report[:entry_start] + replacement + base_report[entry_end:]
+    for placeholder in LICENSE_PLACEHOLDERS:
+        if placeholder in result:
+            raise RuntimeError(
+                f"generated report still contains license placeholder {placeholder!r}"
+            )
+    return result
+
+
+def bundled_component_html(root: Path, base_report: str, metadata: dict) -> str:
     items = []
     for component in BUNDLED_COMPONENTS:
         package = package_by_name(metadata, component.crate)
@@ -196,7 +345,11 @@ def bundled_component_html(base_report: str, metadata: dict) -> str:
             )
 
         crate_root = Path(package["manifest_path"]).parent
-        license_file = crate_root / component.license_path
+        license_file = (
+            root / component.license_path
+            if component.license_from_repository
+            else crate_root / component.license_path
+        )
         if not license_file.is_file():
             raise RuntimeError(f"bundled license file is missing: {license_file}")
         license_text = license_file.read_text(encoding="utf-8")
@@ -231,8 +384,8 @@ def bundled_component_html(base_report: str, metadata: dict) -> str:
             "        <h2>Licenses for source components bundled inside crates:</h2>",
             "        <p>",
             "            The following components are compiled into the native library but",
-            "            have licenses in nested crate source directories, so they require",
-            "            explicit entries in addition to the crate-level licenses above.",
+            "            have licenses outside their published package-level metadata, so",
+            "            they require explicit entries in addition to the crate licenses above.",
             "        </p>",
             '        <ul class="licenses-list bundled-subcomponents">',
             *items,
@@ -241,7 +394,10 @@ def bundled_component_html(base_report: str, metadata: dict) -> str:
     )
 
 
-def complete_report(base_report: str, report: Report, metadata: dict) -> str:
+def complete_report(
+    root: Path, base_report: str, report: Report, metadata: dict
+) -> str:
+    base_report = replace_placeholder_mit_license(root, base_report, metadata)
     description = (
         "\n        <p><strong>Rust target:</strong> "
         f"<code>{html.escape(report.target)}</code></p>"
@@ -263,7 +419,7 @@ def complete_report(base_report: str, report: Report, metadata: dict) -> str:
         raise RuntimeError("about.hbs output has no closing main element")
     result = (
         result[:closing_main]
-        + bundled_component_html(base_report, metadata)
+        + bundled_component_html(root, base_report, metadata)
         + "\n"
         + result[closing_main:]
     )
@@ -299,7 +455,9 @@ def generated_files(root: Path) -> dict[Path, str]:
                 root, report, temp_root / f"report-{index}.html"
             )
             metadata = cargo_metadata(root, report)
-            result[root / report.output] = complete_report(base, report, metadata)
+            result[root / report.output] = complete_report(
+                root, base, report, metadata
+            )
 
     apache_license = (root / "LICENSE").read_text(encoding="utf-8")
     notice = (root / "NOTICE").read_text(encoding="utf-8").rstrip() + "\n"

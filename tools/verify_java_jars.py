@@ -42,6 +42,17 @@ NESTED_LICENSE_MARKERS = (
     "For Zstandard software",
     "Dr Martin Porter",
     "UNICODE, INC. LICENSE AGREEMENT",
+    'id="mit-jieba-rs-workspace"',
+    "Copyright (c) 2018 - 2019 messense",
+    "Copyright (c) 2019 Paul Meng",
+    'id="bundled-python-jieba-data"',
+    "Copyright (c) 2013 Sun Junyi",
+)
+LICENSE_PLACEHOLDERS = (
+    "&lt;year&gt;",
+    "&lt;copyright holders&gt;",
+    "<year>",
+    "<copyright holders>",
 )
 
 
@@ -51,6 +62,13 @@ def repository_root() -> Path:
             ["git", "rev-parse", "--show-toplevel"], text=True
         ).strip()
     )
+
+
+def verify_notice(archive: ZipFile, root: Path) -> None:
+    expected = (root / "NOTICE").read_bytes()
+    actual = archive.read("META-INF/NOTICE")
+    if actual != expected:
+        raise ValueError("META-INF/NOTICE does not match the canonical NOTICE")
 
 
 def verify_main_jar(path: Path, root: Path, require_all_natives: bool) -> None:
@@ -65,6 +83,7 @@ def verify_main_jar(path: Path, root: Path, require_all_natives: bool) -> None:
         missing = sorted(required - names)
         if missing:
             raise ValueError(f"missing legal files: {missing}")
+        verify_notice(archive, root)
         if "META-INF/DEPENDENCIES.rust.tsv" in names:
             raise ValueError(
                 "main JAR contains the cross-target repository dependency inventory"
@@ -95,6 +114,11 @@ def verify_main_jar(path: Path, root: Path, require_all_natives: bool) -> None:
             for marker in NESTED_LICENSE_MARKERS:
                 if marker not in report_text:
                     raise ValueError(f"{report_path} is missing {marker!r}")
+            for placeholder in LICENSE_PLACEHOLDERS:
+                if placeholder in report_text:
+                    raise ValueError(
+                        f"{report_path} contains license placeholder {placeholder!r}"
+                    )
             if target.endswith("linux-gnu"):
                 if "linux-raw-sys" not in report_text or "windows_x86_64_" in report_text:
                     raise ValueError(f"{report_path} has an incorrect target dependency set")
@@ -120,12 +144,13 @@ def verify_main_jar(path: Path, root: Path, require_all_natives: bool) -> None:
     print(f"verified main JAR: {path}")
 
 
-def verify_classifier(path: Path) -> None:
+def verify_classifier(path: Path, root: Path) -> None:
     with ZipFile(path) as archive:
         names = set(archive.namelist())
         for required in ("META-INF/LICENSE", "META-INF/NOTICE"):
             if required not in names:
                 raise ValueError(f"missing {required}")
+        verify_notice(archive, root)
 
         license_text = archive.read("META-INF/LICENSE").decode("utf-8")
         if "Apache License" not in license_text:
@@ -157,8 +182,8 @@ def main() -> int:
 
     try:
         verify_main_jar(args.main, root, args.require_all_natives)
-        verify_classifier(args.sources)
-        verify_classifier(args.javadoc)
+        verify_classifier(args.sources, root)
+        verify_classifier(args.javadoc, root)
     except (KeyError, OSError, ValueError) as error:
         print(f"Java artifact verification failed: {error}", file=sys.stderr)
         return 1

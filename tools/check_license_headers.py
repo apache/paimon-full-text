@@ -36,6 +36,9 @@ EXEMPT_FILES = {
     "NOTICE",
     "core/LICENSE",
     "core/NOTICE",
+    # Exact upstream third-party license texts used by the report generator.
+    "third-party-licenses/jieba-rs-v0.10.1.LICENSE",
+    "third-party-licenses/python-jieba-v0.39.LICENSE",
     # Golden test data; adding comments changes the fixture format.
     "core/tests/golden/storage_v1_envelope.hex",
 }

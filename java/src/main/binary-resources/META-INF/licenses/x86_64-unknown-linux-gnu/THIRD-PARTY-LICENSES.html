@@ -3587,12 +3587,41 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 </pre>
             </li>
-            <li class="license">
-                <h3 id="MIT">MIT License</h3>
+            <li class="license corrected-workspace-license">
+                <h3 id="mit-jieba-rs-workspace">MIT License (jieba-rs workspace)</h3>
                 <h4>Used by:</h4>
                 <ul class="license-used-by">
                     <li><a href="https://github.com/messense/jieba-rs">jieba-macros 0.10.1</a></li>
                     <li><a href="https://github.com/messense/jieba-rs">jieba-rs 0.10.1</a></li>
+                </ul>
+                <pre class="license-text">MIT License
+
+Copyright (c) 2018 - 2019 messense
+Copyright (c) 2019 Paul Meng
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the &quot;Software&quot;), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</pre>
+            </li>
+            <li class="license corrected-workspace-license">
+                <h3 id="mit-tantivy-workspace">MIT License (Tantivy workspace)</h3>
+                <h4>Used by:</h4>
+                <ul class="license-used-by">
                     <li><a href="https://github.com/quickwit-oss/tantivy">ownedbytes 0.9.0</a></li>
                     <li><a href="https://github.com/quickwit-oss/tantivy">tantivy-bitpacker 0.10.0</a></li>
                     <li><a href="https://github.com/quickwit-oss/tantivy">tantivy-columnar 0.7.0</a></li>
@@ -3602,24 +3631,13 @@ SOFTWARE.
                     <li><a href="https://github.com/quickwit-oss/tantivy">tantivy-stacker 0.7.0</a></li>
                     <li><a href="https://github.com/quickwit-oss/tantivy">tantivy-tokenizer-api 0.7.0</a></li>
                 </ul>
-                <pre class="license-text">MIT License
+                <pre class="license-text">Copyright (c) 2018 by the project authors, as listed in the AUTHORS file.
 
-Copyright (c) &lt;year&gt; &lt;copyright holders&gt;
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the &quot;Software&quot;), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
-associated documentation files (the &quot;Software&quot;), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
-following conditions:
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial
-portions of the Software.
-
-THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
-LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
-EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-USE OR OTHER DEALINGS IN THE SOFTWARE.
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 </pre>
             </li>
             <li class="license">
@@ -4007,8 +4025,8 @@ Permission is granted to anyone to use this software for any purpose, including 
         <h2>Licenses for source components bundled inside crates:</h2>
         <p>
             The following components are compiled into the native library but
-            have licenses in nested crate source directories, so they require
-            explicit entries in addition to the crate-level licenses above.
+            have licenses outside their published package-level metadata, so
+            they require explicit entries in addition to the crate licenses above.
         </p>
         <ul class="licenses-list bundled-subcomponents">
             <li class="license bundled-subcomponent">
@@ -4155,6 +4173,37 @@ Except as contained in this notice, the name of a copyright holder
 shall not be used in advertising or otherwise to promote the sale,
 use or other dealings in these Data Files or Software without prior
 written authorization of the copyright holder.
+</pre>
+            </li>
+            <li class="license bundled-subcomponent">
+                <h3 id="bundled-python-jieba-data">MIT License</h3>
+                <h4>Bundled component:</h4>
+                <ul class="license-used-by">
+                    <li>
+                        <a href="https://github.com/fxsjy/jieba/tree/v0.39">embedded Python Jieba dictionary and HMM data</a>, bundled by
+                        <a href="https://github.com/messense/jieba-rs">jieba-rs 0.10.1</a>
+                    </li>
+                </ul>
+                <pre class="license-text">The MIT License (MIT)
+
+Copyright (c) 2013 Sun Junyi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the &quot;Software&quot;), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 </pre>
             </li>
         </ul>

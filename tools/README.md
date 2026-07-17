@@ -41,11 +41,14 @@ python3 tools/generate_license_reports.py --check
 
 The generator writes one report for each release target. It also includes the
 nested licenses for vendored Zstandard C sources, generated Snowball algorithms,
-and Unicode data tables that are compiled into the native libraries. The Java
-binary JAR contains all target reports, while its sources and javadoc classifiers
-retain the plain Apache LICENSE and NOTICE. Each Python wheel selects exactly one
-target report and installs its legal files both in the import package and in the
-standard `.dist-info/licenses/` directory.
+Unicode data tables, and the Python Jieba dictionary/HMM data that are compiled
+into the native libraries. It also replaces incomplete registry-package MIT
+templates with the exact Jieba and Tantivy workspace licenses and rejects any
+remaining copyright placeholders. The Java binary JAR contains all target
+reports, while its sources and javadoc classifiers retain the plain Apache
+LICENSE and NOTICE. Each Python wheel selects exactly one target report and
+installs its legal files both in the import package and in the standard
+`.dist-info/licenses/` directory.
 
 Release workflows verify the assembled artifacts with:
 

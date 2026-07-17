@@ -38,6 +38,17 @@ NESTED_LICENSE_MARKERS = (
     "For Zstandard software",
     "Dr Martin Porter",
     "UNICODE, INC. LICENSE AGREEMENT",
+    'id="mit-jieba-rs-workspace"',
+    "Copyright (c) 2018 - 2019 messense",
+    "Copyright (c) 2019 Paul Meng",
+    'id="bundled-python-jieba-data"',
+    "Copyright (c) 2013 Sun Junyi",
+)
+LICENSE_PLACEHOLDERS = (
+    "&lt;year&gt;",
+    "&lt;copyright holders&gt;",
+    "<year>",
+    "<copyright holders>",
 )
 
 
@@ -160,6 +171,11 @@ def verify_wheel(wheel: Path, root: Path) -> None:
         for marker in NESTED_LICENSE_MARKERS:
             if marker not in report_text:
                 raise ValueError(f"third-party report is missing {marker!r}")
+        for placeholder in LICENSE_PLACEHOLDERS:
+            if placeholder in report_text:
+                raise ValueError(
+                    f"third-party report contains license placeholder {placeholder!r}"
+                )
 
         if target.endswith("linux-gnu"):
             if "linux-raw-sys" not in report_text or "windows_x86_64_" in report_text:
