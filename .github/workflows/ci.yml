@@ -136,6 +136,10 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.12']
     steps:
       - uses: actions/checkout@v4
 
@@ -153,7 +157,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
 
       - name: Build FFI library
         run: cargo build --release -p paimon-ftindex-ffi
