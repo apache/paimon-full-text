@@ -34,6 +34,10 @@ EXEMPT_FILES = {
     "DEPENDENCIES.rust.tsv",
     "LICENSE",
     "NOTICE",
+    "core/LICENSE",
+    "core/NOTICE",
+    "java/src/main/appended-resources/META-INF/LICENSE",
+    "python/paimon_ftindex/LICENSE",
     # Generated binary-distribution license texts.
     "java/src/main/resources/META-INF/licenses/THIRD-PARTY-LICENSES.html",
     "python/paimon_ftindex/THIRD-PARTY-LICENSES.html",
