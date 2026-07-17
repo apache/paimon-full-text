@@ -34,9 +34,27 @@ EXEMPT_FILES = {
     "DEPENDENCIES.rust.tsv",
     "LICENSE",
     "NOTICE",
+    "core/LICENSE",
+    "core/NOTICE",
     # Golden test data; adding comments changes the fixture format.
     "core/tests/golden/storage_v1_envelope.hex",
 }
+
+
+def is_generated_legal_file(file_name: str) -> bool:
+    if file_name == "java/src/main/binary-resources/META-INF/LICENSE":
+        return True
+    if file_name.startswith(
+        "java/src/main/binary-resources/META-INF/licenses/"
+    ) and file_name.endswith("/THIRD-PARTY-LICENSES.html"):
+        return True
+    if file_name.startswith("python/licenses/") and file_name.rsplit("/", 1)[-1] in {
+        "LICENSE",
+        "NOTICE",
+        "THIRD-PARTY-LICENSES.html",
+    }:
+        return True
+    return False
 
 
 def repo_root() -> Path:
@@ -64,7 +82,7 @@ def main() -> int:
     missing = []
 
     for file_name in tracked_files(root):
-        if file_name in EXEMPT_FILES:
+        if file_name in EXEMPT_FILES or is_generated_legal_file(file_name):
             continue
 
         path = root / file_name
