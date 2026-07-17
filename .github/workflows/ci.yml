@@ -70,6 +70,9 @@ jobs:
       - name: Check dependency licenses (Apache-compatible)
         run: cargo deny --locked check licenses
 
+      - name: Check Rust security advisories
+        run: cargo deny --locked check advisories
+
       - name: Verify Rust dependency metadata
         run: |
           cargo deny --locked list -f tsv -t 0.6 > /tmp/DEPENDENCIES.rust.tsv
@@ -162,6 +165,10 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.12']
     steps:
       - uses: actions/checkout@v4
 
@@ -179,7 +186,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
 
       - name: Build FFI library
         run: cargo build --release -p paimon-ftindex-ffi
