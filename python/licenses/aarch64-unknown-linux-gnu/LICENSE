@@ -204,8 +204,8 @@
 BUNDLED THIRD-PARTY COMPONENTS
 ===============================================================================
 
-This binary distribution includes Rust components under compatible open source
-licenses. The component inventory, copyright notices, and complete license
-texts are provided in:
+This binary wheel bundles the Rust native library for aarch64-unknown-linux-gnu.
+The component inventory, copyright notices, and complete license texts
+are provided in:
 
-    paimon_ftindex/THIRD-PARTY-LICENSES.html
+    THIRD-PARTY-LICENSES.html

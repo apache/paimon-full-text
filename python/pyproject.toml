@@ -16,7 +16,7 @@
 # under the License.
 
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools==79.0.1", "wheel==0.45.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -24,21 +24,13 @@ name = "paimon-ftindex"
 version = "0.1.0"
 description = "Python bindings for Apache Paimon Full Text Index"
 requires-python = ">=3.8"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 
 [project.optional-dependencies]
 test = ["pytest"]
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 include = ["paimon_ftindex*"]
-
-[tool.setuptools.package-data]
-paimon_ftindex = [
-    "libpaimon_ftindex_ffi.dylib",
-    "libpaimon_ftindex_ffi.so",
-    "paimon_ftindex_ffi.dll",
-    "LICENSE",
-    "NOTICE",
-    "DEPENDENCIES.rust.tsv",
-    "THIRD-PARTY-LICENSES.html",
-]

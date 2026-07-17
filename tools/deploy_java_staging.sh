@@ -513,17 +513,11 @@ validate_maven_artifacts() {
     fi
   done
 
-  if ! jar tf "$jar_file" |
-       grep -qx 'META-INF/licenses/THIRD-PARTY-LICENSES.html'; then
-    echo "Packaged jar is missing third-party license texts" >&2
-    exit 1
-  fi
-
-  if ! unzip -p "$jar_file" META-INF/LICENSE |
-       grep -q 'META-INF/licenses/THIRD-PARTY-LICENSES.html'; then
-    echo "Packaged jar LICENSE does not point to third-party license texts" >&2
-    exit 1
-  fi
+  python3 "$REPO_DIR/tools/verify_java_jars.py" \
+    --main "$jar_file" \
+    --sources "$sources_jar" \
+    --javadoc "$javadoc_jar" \
+    --require-all-natives
 }
 
 if [[ "$DRY_RUN" == "true" ]]; then
