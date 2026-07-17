@@ -57,6 +57,10 @@ def _find_native_lib():
         if os.path.isfile(candidate):
             return candidate
 
+    packaged = os.path.join(_package_dir(), lib)
+    if os.path.isfile(packaged):
+        return packaged
+
     for profile in ["release", "debug"]:
         candidate = os.path.join(here, "..", "target", profile, lib)
         if os.path.isfile(candidate):
@@ -68,9 +72,13 @@ def _find_native_lib():
 class BuildPyWithNativeLib(build_py):
     def run(self):
         src = _find_native_lib()
-        if src:
-            dst = os.path.join(_package_dir(), _lib_name())
-            shutil.copy2(src, dst)
+        if not src:
+            raise RuntimeError(
+                "The pre-built paimon-ftindex FFI native library was not found"
+            )
+
+        dst = os.path.join(_package_dir(), _lib_name())
+        shutil.copy2(src, dst)
         for metadata_file in ["LICENSE", "NOTICE", "DEPENDENCIES.rust.tsv"]:
             metadata_path = os.path.join(_project_root(), metadata_file)
             if os.path.isfile(metadata_path):
