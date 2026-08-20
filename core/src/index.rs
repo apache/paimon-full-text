@@ -22,6 +22,8 @@ use crate::io::{FullTextReadMetrics, ReadMetrics, ReadRequest, SeekRead, SeekWri
 use crate::query::{BooleanOccur, MatchOperator, QuerySpec};
 use crate::storage::{read_header, write_envelope_from_paths, ArchiveFileEntry, IndexHeader};
 use crate::tokenizer::{TokenizerConfig, TokenizerKind};
+use icu_properties::maps::general_category;
+use icu_properties::GeneralCategory;
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use roaring::RoaringTreemap;
 use std::collections::HashMap;
@@ -37,7 +39,8 @@ use tantivy::query::{
 use tantivy::schema::{IndexRecordOption, NumericOptions, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{
     AsciiFoldingFilter, Language, LowerCaser, NgramTokenizer, RawTokenizer, RemoveLongFilter,
-    SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer, TokenStream, WhitespaceTokenizer,
+    SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer, Token, TokenStream, Tokenizer,
+    WhitespaceTokenizer,
 };
 use tantivy::{
     DocId, DocSet, Index, IndexWriter, Score, SegmentReader, TantivyDocument, Term, TERMINATED,
@@ -384,16 +387,27 @@ fn build_text_analyzer(config: &TokenizerConfig) -> Result<TextAnalyzer> {
         }
         TokenizerKind::Raw => TextAnalyzer::builder(RawTokenizer::default()).dynamic(),
         TokenizerKind::Ngram => {
-            let tokenizer = NgramTokenizer::new(
-                config.ngram_min_gram,
-                config.ngram_max_gram,
-                config.ngram_prefix_only,
-            )
-            .map_err(|e| FtIndexError::InvalidOption {
-                key: "ngram".to_string(),
-                message: e.to_string(),
-            })?;
-            TextAnalyzer::builder(tokenizer).dynamic()
+            if config.ngram_token_chars.is_empty() {
+                let tokenizer = NgramTokenizer::new(
+                    config.ngram_min_gram,
+                    config.ngram_max_gram,
+                    config.ngram_prefix_only,
+                )
+                .map_err(|e| FtIndexError::InvalidOption {
+                    key: "ngram".to_string(),
+                    message: e.to_string(),
+                })?;
+                TextAnalyzer::builder(tokenizer).dynamic()
+            } else {
+                let matcher = CharTypeMatcher::from_config(&config.ngram_token_chars);
+                let tokenizer = FilteredNgramTokenizer::new(
+                    config.ngram_min_gram,
+                    config.ngram_max_gram,
+                    config.ngram_prefix_only,
+                    matcher,
+                )?;
+                TextAnalyzer::builder(tokenizer).dynamic()
+            }
         }
         TokenizerKind::Jieba => {
             let mut tokenizer = JiebaTokenizer::with_search_mode(config.jieba_search_mode);
@@ -455,6 +469,212 @@ fn parse_language(language: &str) -> Result<Language> {
             key: "language".to_string(),
             message: format!("unsupported tokenizer language '{other}'"),
         }),
+    }
+}
+
+
+#[derive(Clone)]
+struct CharTypeMatcher {
+    allow_letter: bool,
+    allow_digit: bool,
+    allow_whitespace: bool,
+    allow_punctuation: bool,
+    allow_symbol: bool,
+}
+
+impl CharTypeMatcher {
+    fn from_config(token_chars: &str) -> Self {
+        let mut m = CharTypeMatcher {
+            allow_letter: false,
+            allow_digit: false,
+            allow_whitespace: false,
+            allow_punctuation: false,
+            allow_symbol: false,
+        };
+        for part in token_chars.split(',') {
+            match part.trim() {
+                "letter" => m.allow_letter = true,
+                "digit" => m.allow_digit = true,
+                "whitespace" => m.allow_whitespace = true,
+                "punctuation" => m.allow_punctuation = true,
+                "symbol" => m.allow_symbol = true,
+                _ => {}
+            }
+        }
+        m
+    }
+
+    fn matches(&self, c: char) -> bool {
+        let gc = general_category().get(c);
+        match gc {
+            GeneralCategory::UppercaseLetter
+            | GeneralCategory::LowercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter => self.allow_letter,
+            GeneralCategory::DecimalNumber
+            | GeneralCategory::LetterNumber
+            | GeneralCategory::OtherNumber => self.allow_digit,
+            GeneralCategory::SpaceSeparator
+            | GeneralCategory::LineSeparator
+            | GeneralCategory::ParagraphSeparator => self.allow_whitespace,
+            GeneralCategory::Control if c.is_whitespace() => self.allow_whitespace,
+            GeneralCategory::ConnectorPunctuation
+            | GeneralCategory::DashPunctuation
+            | GeneralCategory::OpenPunctuation
+            | GeneralCategory::ClosePunctuation
+            | GeneralCategory::InitialPunctuation
+            | GeneralCategory::FinalPunctuation
+            | GeneralCategory::OtherPunctuation => self.allow_punctuation,
+            GeneralCategory::MathSymbol
+            | GeneralCategory::CurrencySymbol
+            | GeneralCategory::ModifierSymbol
+            | GeneralCategory::OtherSymbol => self.allow_symbol,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FilteredNgramTokenizer {
+    min_gram: usize,
+    max_gram: usize,
+    prefix_only: bool,
+    matcher: CharTypeMatcher,
+}
+
+impl FilteredNgramTokenizer {
+    fn new(
+        min_gram: usize,
+        max_gram: usize,
+        prefix_only: bool,
+        matcher: CharTypeMatcher,
+    ) -> Result<Self> {
+        if min_gram == 0 || max_gram == 0 || min_gram > max_gram {
+            return Err(FtIndexError::InvalidOption {
+                key: "ngram".to_string(),
+                message: "invalid ngram gram sizes".to_string(),
+            });
+        }
+        Ok(Self {
+            min_gram,
+            max_gram,
+            prefix_only,
+            matcher,
+        })
+    }
+}
+
+impl Tokenizer for FilteredNgramTokenizer {
+    type TokenStream<'a> = FilteredNgramTokenStream<'a>;
+
+    fn token_stream<'a>(&'a mut self, text: &'a str) -> Self::TokenStream<'a> {
+        FilteredNgramTokenStream::new(
+            text,
+            self.min_gram,
+            self.max_gram,
+            self.prefix_only,
+            &self.matcher,
+        )
+    }
+}
+
+struct FilteredNgramTokenStream<'a> {
+    tokens: Vec<Token>,
+    current: usize,
+    #[allow(dead_code)]
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> FilteredNgramTokenStream<'a> {
+    fn new(
+        text: &'a str,
+        min_gram: usize,
+        max_gram: usize,
+        prefix_only: bool,
+        matcher: &CharTypeMatcher,
+    ) -> Self {
+        let mut tokens = Vec::new();
+        let mut position = 0usize;
+
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        let mut seg_start = None;
+
+        for i in 0..=chars.len() {
+            let is_match = if i < chars.len() {
+                matcher.matches(chars[i].1)
+            } else {
+                false
+            };
+
+            if is_match {
+                if seg_start.is_none() {
+                    seg_start = Some(i);
+                }
+            } else if let Some(start) = seg_start {
+                let seg_chars = &chars[start..i];
+                let seg_byte_start = seg_chars[0].0;
+                let seg_byte_end = if i < chars.len() {
+                    chars[i].0
+                } else {
+                    text.len()
+                };
+                let segment = &text[seg_byte_start..seg_byte_end];
+                let seg_char_indices: Vec<usize> =
+                    segment.char_indices().map(|(idx, _)| idx).collect();
+                let seg_char_count = seg_char_indices.len();
+
+                let max_start = if prefix_only { 1 } else { seg_char_count };
+                for s in 0..max_start {
+                    for gram_size in min_gram..=max_gram {
+                        let e = s + gram_size;
+                        if e > seg_char_count {
+                            break;
+                        }
+                        let byte_start = seg_char_indices[s];
+                        let byte_end = if e < seg_char_count {
+                            seg_char_indices[e]
+                        } else {
+                            segment.len()
+                        };
+                        let ngram = &segment[byte_start..byte_end];
+                        let mut token = Token::default();
+                        token.text = ngram.to_string();
+                        token.offset_from = seg_byte_start + byte_start;
+                        token.offset_to = seg_byte_start + byte_end;
+                        token.position = position;
+                        position += 1;
+                        tokens.push(token);
+                    }
+                }
+                seg_start = None;
+            }
+        }
+
+        Self {
+            tokens,
+            current: 0,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a> TokenStream for FilteredNgramTokenStream<'a> {
+    fn advance(&mut self) -> bool {
+        if self.current < self.tokens.len() {
+            self.current += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn token(&self) -> &Token {
+        &self.tokens[self.current - 1]
+    }
+
+    fn token_mut(&mut self) -> &mut Token {
+        &mut self.tokens[self.current - 1]
     }
 }
 
@@ -1240,5 +1460,168 @@ mod tests {
         assert!(state.is_some());
         assert_eq!(document_count, 10_000);
         Ok(())
+    }
+
+    fn tokenize(config: &TokenizerConfig) -> impl FnMut(&str) -> Vec<String> {
+        let mut analyzer = build_text_analyzer(config).unwrap();
+        move |text: &str| {
+            let mut stream = analyzer.token_stream(text);
+            let mut tokens = Vec::new();
+            while stream.advance() {
+                tokens.push(stream.token().text.clone());
+            }
+            tokens
+        }
+    }
+
+    fn config_with(f: impl FnOnce(&mut TokenizerConfig)) -> TokenizerConfig {
+        let mut c = TokenizerConfig::default();
+        f(&mut c);
+        c.validate().unwrap();
+        c
+    }
+
+    #[test]
+    fn char_type_matcher_letter_only() {
+        let m = CharTypeMatcher::from_config("letter");
+        assert!(m.matches('a'));
+        assert!(m.matches('中'));
+        assert!(!m.matches('1'));
+        assert!(!m.matches(' '));
+        assert!(!m.matches('.'));
+    }
+
+    #[test]
+    fn char_type_matcher_digit_only() {
+        let m = CharTypeMatcher::from_config("digit");
+        assert!(m.matches('0'));
+        assert!(m.matches('9'));
+        assert!(!m.matches('a'));
+        assert!(!m.matches(' '));
+    }
+
+    #[test]
+    fn char_type_matcher_punctuation_ascii() {
+        let m = CharTypeMatcher::from_config("punctuation");
+        assert!(m.matches('.'));
+        assert!(m.matches(','));
+        assert!(m.matches('!'));
+        assert!(m.matches('('));
+        assert!(!m.matches('a'));
+        assert!(!m.matches('1'));
+    }
+
+    #[test]
+    fn char_type_matcher_punctuation_non_ascii() {
+        let m = CharTypeMatcher::from_config("punctuation");
+        assert!(m.matches('「'));
+        assert!(m.matches('」'));
+        assert!(m.matches('、'));
+        assert!(m.matches('。'));
+        assert!(m.matches('—'));
+        assert!(!m.matches('中'));
+    }
+
+    #[test]
+    fn char_type_matcher_symbol() {
+        let m = CharTypeMatcher::from_config("symbol");
+        assert!(m.matches('$'));
+        assert!(m.matches('©'));
+        assert!(m.matches('→'));
+        assert!(!m.matches('a'));
+        assert!(!m.matches('.'));
+    }
+
+    #[test]
+    fn char_type_matcher_whitespace() {
+        let m = CharTypeMatcher::from_config("whitespace");
+        assert!(m.matches(' '));
+        assert!(m.matches('\t'));
+        assert!(!m.matches('a'));
+    }
+
+    #[test]
+    fn char_type_matcher_multiple() {
+        let m = CharTypeMatcher::from_config("letter, digit");
+        assert!(m.matches('a'));
+        assert!(m.matches('5'));
+        assert!(!m.matches(' '));
+        assert!(!m.matches('.'));
+    }
+
+    #[test]
+    fn filtered_ngram_letter_only() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Ngram;
+            c.ngram_min_gram = 2;
+            c.ngram_max_gram = 3;
+            c.ngram_token_chars = "letter".to_string();
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("abc123def");
+        assert!(tokens.contains(&"ab".to_string()));
+        assert!(tokens.contains(&"abc".to_string()));
+        assert!(tokens.contains(&"de".to_string()));
+        assert!(tokens.contains(&"def".to_string()));
+        assert!(!tokens.iter().any(|t| t.contains('1')));
+    }
+
+    #[test]
+    fn filtered_ngram_digit_only() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Ngram;
+            c.ngram_min_gram = 2;
+            c.ngram_max_gram = 2;
+            c.ngram_token_chars = "digit".to_string();
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("abc123def");
+        assert_eq!(tokens, vec!["12", "23"]);
+    }
+
+    #[test]
+    fn filtered_ngram_letter_digit() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Ngram;
+            c.ngram_min_gram = 3;
+            c.ngram_max_gram = 3;
+            c.ngram_token_chars = "letter, digit".to_string();
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("ab 12 cd");
+        assert!(!tokens.iter().any(|t| t.contains(' ')));
+    }
+
+    #[test]
+    fn filtered_ngram_prefix_only() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Ngram;
+            c.ngram_min_gram = 2;
+            c.ngram_max_gram = 4;
+            c.ngram_prefix_only = true;
+            c.ngram_token_chars = "letter".to_string();
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("hello");
+        assert!(tokens.contains(&"he".to_string()));
+        assert!(tokens.contains(&"hel".to_string()));
+        assert!(tokens.contains(&"hell".to_string()));
+        assert!(!tokens.contains(&"el".to_string()));
+        assert!(!tokens.contains(&"llo".to_string()));
+    }
+
+    #[test]
+    fn filtered_ngram_chinese() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Ngram;
+            c.ngram_min_gram = 2;
+            c.ngram_max_gram = 2;
+            c.ngram_token_chars = "letter".to_string();
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("中文测试");
+        assert!(tokens.contains(&"中文".to_string()));
+        assert!(tokens.contains(&"文测".to_string()));
+        assert!(tokens.contains(&"测试".to_string()));
     }
 }
