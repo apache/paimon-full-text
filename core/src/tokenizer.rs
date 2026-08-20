@@ -40,6 +40,8 @@ pub struct TokenizerConfig {
     pub ngram_prefix_only: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ngram_token_chars: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icu_normalize: String,
     pub jieba_search_mode: bool,
     pub jieba_ordinal_position: bool,
     pub lower_case: bool,
@@ -60,6 +62,7 @@ impl Default for TokenizerConfig {
             ngram_max_gram: 3,
             ngram_prefix_only: false,
             ngram_token_chars: String::new(),
+            icu_normalize: String::new(),
             jieba_search_mode: true,
             jieba_ordinal_position: true,
             lower_case: true,
@@ -98,6 +101,9 @@ impl TokenizerConfig {
                 }
                 "ngram.token-chars" => {
                     config.ngram_token_chars = value.trim().to_lowercase();
+                }
+                "icu-normalize" => {
+                    config.icu_normalize = value.trim().to_lowercase();
                 }
                 "jieba.search-mode" => {
                     config.jieba_search_mode = parse_bool(key, value)?;
@@ -167,6 +173,19 @@ impl TokenizerConfig {
                             &format!("unknown character type '{other}'"),
                         );
                     }
+                }
+            }
+        }
+        if !self.icu_normalize.is_empty() {
+            match self.icu_normalize.as_str() {
+                "nfc" | "nfd" | "nfkc" | "nfkd" => {}
+                other => {
+                    return invalid(
+                        "icu-normalize",
+                        &format!(
+                            "unsupported normalization form '{other}', expected one of: nfc, nfd, nfkc, nfkd"
+                        ),
+                    );
                 }
             }
         }

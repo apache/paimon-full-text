@@ -22,6 +22,7 @@ use crate::io::{FullTextReadMetrics, ReadMetrics, ReadRequest, SeekRead, SeekWri
 use crate::query::{BooleanOccur, MatchOperator, QuerySpec};
 use crate::storage::{read_header, write_envelope_from_paths, ArchiveFileEntry, IndexHeader};
 use crate::tokenizer::{TokenizerConfig, TokenizerKind};
+use icu_normalizer::{ComposingNormalizer, DecomposingNormalizer};
 use icu_properties::maps::general_category;
 use icu_properties::GeneralCategory;
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
@@ -39,8 +40,8 @@ use tantivy::query::{
 use tantivy::schema::{IndexRecordOption, NumericOptions, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{
     AsciiFoldingFilter, Language, LowerCaser, NgramTokenizer, RawTokenizer, RemoveLongFilter,
-    SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer, Token, TokenStream, Tokenizer,
-    WhitespaceTokenizer,
+    SimpleTokenizer, Stemmer, StopWordFilter, TextAnalyzer, Token, TokenFilter, TokenStream,
+    Tokenizer, WhitespaceTokenizer,
 };
 use tantivy::{
     DocId, DocSet, Index, IndexWriter, Score, SegmentReader, TantivyDocument, Term, TERMINATED,
@@ -416,6 +417,10 @@ fn build_text_analyzer(config: &TokenizerConfig) -> Result<TextAnalyzer> {
         }
     };
     builder = builder.filter_dynamic(RemoveLongFilter::limit(config.max_token_length));
+    if !config.icu_normalize.is_empty() {
+        let mode = parse_normalize_mode(&config.icu_normalize)?;
+        builder = builder.filter_dynamic(IcuNormalizeFilter { mode });
+    }
     if config.lower_case {
         builder = builder.filter_dynamic(LowerCaser);
     }
@@ -532,6 +537,118 @@ impl CharTypeMatcher {
             | GeneralCategory::OtherSymbol => self.allow_symbol,
             _ => false,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NormalizeMode {
+    Nfc,
+    Nfd,
+    Nfkc,
+    Nfkd,
+}
+
+fn parse_normalize_mode(mode: &str) -> Result<NormalizeMode> {
+    match mode {
+        "nfc" => Ok(NormalizeMode::Nfc),
+        "nfd" => Ok(NormalizeMode::Nfd),
+        "nfkc" => Ok(NormalizeMode::Nfkc),
+        "nfkd" => Ok(NormalizeMode::Nfkd),
+        other => Err(FtIndexError::InvalidOption {
+            key: "icu-normalize".to_string(),
+            message: format!("unsupported normalization form '{other}'"),
+        }),
+    }
+}
+
+#[derive(Clone)]
+struct IcuNormalizeFilter {
+    mode: NormalizeMode,
+}
+
+impl TokenFilter for IcuNormalizeFilter {
+    type Tokenizer<T: Tokenizer> = IcuNormalizeFilterWrapper<T>;
+
+    fn transform<T: Tokenizer>(self, tokenizer: T) -> Self::Tokenizer<T> {
+        IcuNormalizeFilterWrapper {
+            inner: tokenizer,
+            mode: self.mode,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct IcuNormalizeFilterWrapper<T> {
+    inner: T,
+    mode: NormalizeMode,
+}
+
+impl<T: Tokenizer> Tokenizer for IcuNormalizeFilterWrapper<T> {
+    type TokenStream<'a> = IcuNormalizeTokenStream<'a, T::TokenStream<'a>>;
+
+    fn token_stream<'a>(&'a mut self, text: &'a str) -> Self::TokenStream<'a> {
+        IcuNormalizeTokenStream::new(self.inner.token_stream(text), self.mode)
+    }
+}
+
+struct IcuNormalizeTokenStream<'a, T> {
+    inner: T,
+    mode: NormalizeMode,
+    #[allow(dead_code)]
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, T: TokenStream> IcuNormalizeTokenStream<'a, T> {
+    fn new(inner: T, mode: NormalizeMode) -> Self {
+        Self {
+            inner,
+            mode,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, T: TokenStream> TokenStream for IcuNormalizeTokenStream<'a, T> {
+    fn advance(&mut self) -> bool {
+        if !self.inner.advance() {
+            return false;
+        }
+        let token = self.inner.token_mut();
+        match self.mode {
+            NormalizeMode::Nfc => {
+                let normalizer = ComposingNormalizer::new_nfc();
+                if !normalizer.is_normalized(&token.text) {
+                    token.text = normalizer.normalize(&token.text);
+                }
+            }
+            NormalizeMode::Nfkc => {
+                let normalizer = ComposingNormalizer::new_nfkc();
+                if !normalizer.is_normalized(&token.text) {
+                    token.text = normalizer.normalize(&token.text);
+                }
+            }
+            NormalizeMode::Nfd => {
+                let normalizer = DecomposingNormalizer::new_nfd();
+                if !normalizer.is_normalized(&token.text) {
+                    token.text = normalizer.normalize(&token.text);
+                }
+            }
+            NormalizeMode::Nfkd => {
+                let normalizer = DecomposingNormalizer::new_nfkd();
+                if !normalizer.is_normalized(&token.text) {
+                    token.text = normalizer.normalize(&token.text);
+                }
+            }
+        };
+        true
+    }
+
+    fn token(&self) -> &Token {
+        self.inner.token()
+    }
+
+    fn token_mut(&mut self) -> &mut Token {
+        self.inner.token_mut()
     }
 }
 
@@ -1623,5 +1740,57 @@ mod tests {
         assert!(tokens.contains(&"中文".to_string()));
         assert!(tokens.contains(&"文测".to_string()));
         assert!(tokens.contains(&"测试".to_string()));
+    }
+
+    #[test]
+    fn icu_normalize_nfkc_fullwidth() {
+        let config = config_with(|c| {
+            c.icu_normalize = "nfkc".to_string();
+            c.stem = false;
+            c.remove_stop_words = false;
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("Ａｐａｃｈｅ");
+        assert_eq!(tokens, vec!["apache"]);
+    }
+
+    #[test]
+    fn icu_normalize_nfkc_already_normalized() {
+        let config = config_with(|c| {
+            c.icu_normalize = "nfkc".to_string();
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("hello world");
+        assert_eq!(tokens, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn icu_normalize_nfc_combining() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Raw;
+            c.icu_normalize = "nfc".to_string();
+            c.stem = false;
+            c.remove_stop_words = false;
+            c.lower_case = false;
+            c.ascii_folding = false;
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("A\u{0308}");
+        assert_eq!(tokens, vec!["\u{00C4}"]);
+    }
+
+    #[test]
+    fn icu_normalize_nfd_precomposed() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Raw;
+            c.icu_normalize = "nfd".to_string();
+            c.stem = false;
+            c.remove_stop_words = false;
+            c.lower_case = false;
+            c.ascii_folding = false;
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("\u{00C4}");
+        assert_eq!(tokens, vec!["A\u{0308}"]);
     }
 }

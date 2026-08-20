@@ -27,6 +27,7 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 anyhow = "1"
+icu_normalizer = "1.5"
 icu_properties = "1.5"
 jni = "0.21"
 levenshtein_automata = "0.2"

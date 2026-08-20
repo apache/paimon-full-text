@@ -25,6 +25,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+icu_normalizer.workspace = true
 icu_properties.workspace = true
 levenshtein_automata.workspace = true
 roaring.workspace = true
