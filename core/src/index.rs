@@ -25,6 +25,7 @@ use crate::tokenizer::{TokenizerConfig, TokenizerKind};
 use icu_normalizer::{ComposingNormalizer, DecomposingNormalizer};
 use icu_properties::maps::general_category;
 use icu_properties::GeneralCategory;
+use icu_segmenter::WordSegmenter;
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use roaring::RoaringTreemap;
 use std::collections::HashMap;
@@ -367,6 +368,7 @@ fn tokenizer_name(config: &TokenizerConfig) -> &'static str {
         TokenizerKind::Raw => "paimon_custom",
         TokenizerKind::Ngram => "paimon_ngram",
         TokenizerKind::Jieba => "paimon_jieba",
+        TokenizerKind::Icu => "paimon_icu",
     }
 }
 
@@ -415,6 +417,7 @@ fn build_text_analyzer(config: &TokenizerConfig) -> Result<TextAnalyzer> {
             tokenizer.set_ordinal_position_mode(config.jieba_ordinal_position);
             TextAnalyzer::builder(tokenizer).dynamic()
         }
+        TokenizerKind::Icu => TextAnalyzer::builder(IcuTokenizer::new()).dynamic(),
     };
     builder = builder.filter_dynamic(RemoveLongFilter::limit(config.max_token_length));
     if !config.icu_normalize.is_empty() {
@@ -777,6 +780,89 @@ impl<'a> FilteredNgramTokenStream<'a> {
 }
 
 impl<'a> TokenStream for FilteredNgramTokenStream<'a> {
+    fn advance(&mut self) -> bool {
+        if self.current < self.tokens.len() {
+            self.current += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn token(&self) -> &Token {
+        &self.tokens[self.current - 1]
+    }
+
+    fn token_mut(&mut self) -> &mut Token {
+        &mut self.tokens[self.current - 1]
+    }
+}
+
+#[derive(Clone)]
+struct IcuTokenizer {}
+
+impl IcuTokenizer {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Tokenizer for IcuTokenizer {
+    type TokenStream<'a> = IcuTokenStream<'a>;
+
+    fn token_stream<'a>(&'a mut self, text: &'a str) -> Self::TokenStream<'a> {
+        IcuTokenStream::new(text)
+    }
+}
+
+struct IcuTokenStream<'a> {
+    tokens: Vec<Token>,
+    current: usize,
+    #[allow(dead_code)]
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> IcuTokenStream<'a> {
+    fn new(text: &'a str) -> Self {
+        let segmenter = WordSegmenter::new_auto();
+        let iter = segmenter.segment_str(text);
+        let boundaries: Vec<usize> = iter.collect();
+
+        let mut tokens = Vec::new();
+        let mut position = 0usize;
+
+        for window in boundaries.windows(2) {
+            let start = window[0];
+            let end = window[1];
+            if start >= end || end > text.len() {
+                continue;
+            }
+            let segment = &text[start..end];
+            if segment.trim().is_empty() {
+                continue;
+            }
+            let has_alnum = segment.chars().any(|c| c.is_alphanumeric());
+            if !has_alnum {
+                continue;
+            }
+            let mut token = Token::default();
+            token.text = segment.to_string();
+            token.offset_from = start;
+            token.offset_to = end;
+            token.position = position;
+            position += 1;
+            tokens.push(token);
+        }
+
+        Self {
+            tokens,
+            current: 0,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a> TokenStream for IcuTokenStream<'a> {
     fn advance(&mut self) -> bool {
         if self.current < self.tokens.len() {
             self.current += 1;
@@ -1792,5 +1878,69 @@ mod tests {
         let mut tok = tokenize(&config);
         let tokens = tok("\u{00C4}");
         assert_eq!(tokens, vec!["A\u{0308}"]);
+    }
+
+    #[test]
+    fn icu_tokenizer_chinese() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Icu;
+            c.lower_case = false;
+            c.stem = false;
+            c.remove_stop_words = false;
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("中文分词测试");
+        assert!(tokens.len() > 1);
+        let joined: String = tokens.concat();
+        assert_eq!(joined, "中文分词测试");
+    }
+
+    #[test]
+    fn icu_tokenizer_mixed_cjk_latin() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Icu;
+            c.lower_case = false;
+            c.stem = false;
+            c.remove_stop_words = false;
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("Hello世界");
+        assert!(tokens.contains(&"Hello".to_string()));
+        assert!(tokens.iter().any(|t| t.contains('世') || t.contains('界')));
+    }
+
+    #[test]
+    fn icu_tokenizer_skips_whitespace_and_punctuation() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Icu;
+            c.lower_case = false;
+            c.stem = false;
+            c.remove_stop_words = false;
+        });
+        let mut tok = tokenize(&config);
+        let tokens = tok("hello, world!");
+        assert!(!tokens.iter().any(|t| t.contains(',') || t.contains('!')));
+        assert!(tokens.contains(&"hello".to_string()));
+        assert!(tokens.contains(&"world".to_string()));
+    }
+
+    #[test]
+    fn icu_tokenizer_position_offset() {
+        let config = config_with(|c| {
+            c.tokenizer = TokenizerKind::Icu;
+            c.lower_case = false;
+            c.stem = false;
+            c.remove_stop_words = false;
+        });
+        let mut analyzer = build_text_analyzer(&config).unwrap();
+        let mut stream = analyzer.token_stream("hello world");
+        assert!(stream.advance());
+        assert_eq!(stream.token().position, 0);
+        assert_eq!(stream.token().offset_from, 0);
+        assert_eq!(stream.token().offset_to, 5);
+        assert!(stream.advance());
+        assert_eq!(stream.token().position, 1);
+        assert_eq!(stream.token().offset_from, 6);
+        assert_eq!(stream.token().offset_to, 11);
     }
 }

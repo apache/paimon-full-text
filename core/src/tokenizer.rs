@@ -29,6 +29,7 @@ pub enum TokenizerKind {
     Raw,
     Ngram,
     Jieba,
+    Icu,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -202,6 +203,7 @@ fn parse_tokenizer(value: &str) -> Result<TokenizerKind> {
         "raw" => Ok(TokenizerKind::Raw),
         "ngram" => Ok(TokenizerKind::Ngram),
         "jieba" => Ok(TokenizerKind::Jieba),
+        "icu" => Ok(TokenizerKind::Icu),
         other => Err(FtIndexError::InvalidOption {
             key: "tokenizer".to_string(),
             message: format!("unsupported tokenizer '{other}'"),

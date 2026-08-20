@@ -29,6 +29,7 @@ rust-version = "1.90"
 anyhow = "1"
 icu_normalizer = "1.5"
 icu_properties = "1.5"
+icu_segmenter = "1.5"
 jni = "0.21"
 levenshtein_automata = "0.2"
 serde = { version = "1", features = ["derive"] }
