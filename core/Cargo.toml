@@ -25,6 +25,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+icu_segmenter.workspace = true
 levenshtein_automata.workspace = true
 roaring.workspace = true
 serde.workspace = true

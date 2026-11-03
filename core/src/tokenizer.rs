@@ -19,6 +19,8 @@ use crate::error::{FtIndexError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub(crate) mod icu;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenizerKind {
@@ -29,6 +31,9 @@ pub enum TokenizerKind {
     Raw,
     Ngram,
     Jieba,
+    Icu,
+    #[serde(rename = "icu/split")]
+    IcuSplit,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -164,6 +169,8 @@ fn parse_tokenizer(value: &str) -> Result<TokenizerKind> {
         "raw" => Ok(TokenizerKind::Raw),
         "ngram" => Ok(TokenizerKind::Ngram),
         "jieba" => Ok(TokenizerKind::Jieba),
+        "icu" => Ok(TokenizerKind::Icu),
+        "icu/split" => Ok(TokenizerKind::IcuSplit),
         other => Err(FtIndexError::InvalidOption {
             key: "tokenizer".to_string(),
             message: format!("unsupported tokenizer '{other}'"),

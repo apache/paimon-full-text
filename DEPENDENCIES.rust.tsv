@@ -32,6 +32,7 @@ darling_macro@0.23.0						X
 dary_heap@0.3.9	X					X					
 datasketches@0.2.0	X										
 deranged@0.5.8	X					X					
+displaydoc@0.2.7	X					X					
 downcast-rs@2.0.2	X					X					
 either@1.16.0	X					X					
 equivalent@1.0.2	X					X					
@@ -51,6 +52,13 @@ getrandom@0.3.4	X					X
 getrandom@0.4.3	X					X					
 hashbrown@0.16.1	X					X					
 htmlescape@0.3.1	X					X	X				
+icu_collections@2.2.0								X			
+icu_locale@2.2.0								X			
+icu_locale_core@2.2.0								X			
+icu_locale_data@2.2.0								X			
+icu_provider@2.2.0								X			
+icu_segmenter@2.2.0								X			
+icu_segmenter_data@2.2.0								X			
 ident_case@1.0.1	X					X					
 include-flate@0.3.3	X										
 include-flate-codegen@0.3.3	X										
@@ -71,6 +79,7 @@ libc@0.2.186	X					X
 libflate@2.3.0						X					
 libflate_lz77@2.3.0						X					
 linux-raw-sys@0.12.1	X	X				X					
+litemap@0.8.3								X			
 log@0.4.33	X					X					
 lru@0.16.4						X					
 lz4_flex@0.13.1						X					
@@ -96,6 +105,7 @@ phf_generator@0.13.1						X
 phf_shared@0.13.1						X					
 pin-project-lite@0.2.17	X					X					
 pkg-config@0.3.33	X					X					
+potential_utf@0.1.6								X			
 powerfmt@0.2.0	X					X					
 prettyplease@0.2.37	X					X					
 proc-macro-error-attr2@2.0.0	X					X					
@@ -128,6 +138,8 @@ smallvec@1.15.2	X					X
 stable_deref_trait@1.2.1	X					X					
 strsim@0.11.1						X					
 syn@2.0.118	X					X					
+syn@3.0.9	X					X					
+synstructure@0.14.0						X					
 tantivy@0.26.1						X					
 tantivy-bitpacker@0.10.0						X					
 tantivy-columnar@0.7.0						X					
@@ -145,11 +157,14 @@ thiserror-impl@1.0.69	X					X
 thiserror-impl@2.0.18	X					X					
 time@0.3.53	X					X					
 time-core@0.1.9	X					X					
+tinystr@0.8.5								X			
 typeid@1.0.3	X					X					
 typetag@0.2.22	X					X					
 typetag-impl@0.2.22	X					X					
 unicode-ident@1.0.24	X					X		X			
 utf8-ranges@1.0.5						X			X		
+utf8_iter@1.1.0	X					X					
+utf_types@1.0.0	X					X					
 uuid@1.23.4	X					X					
 walkdir@2.5.0						X			X		
 wasip2@1.0.4+wasi-0.2.12	X	X				X					
@@ -179,7 +194,15 @@ windows_x86_64_gnullvm@0.52.6	X					X
 windows_x86_64_msvc@0.42.2	X					X					
 windows_x86_64_msvc@0.52.6	X					X					
 wit-bindgen@0.57.1	X	X				X					
+writeable@0.6.4								X			
+yoke@0.8.4								X			
+yoke-derive@0.8.4								X			
+zerofrom@0.1.8								X			
+zerofrom-derive@0.1.8								X			
+zerotrie@0.2.5								X			
+zerovec@0.11.9								X			
+zerovec-derive@0.11.7								X			
 zmij@1.0.21						X					
-zstd@0.13.3						X					
-zstd-safe@7.2.4	X					X					
-zstd-sys@2.0.16+zstd.1.5.7	X					X					
+zstd@0.13.4				X							
+zstd-safe@7.4.0				X							
+zstd-sys@2.1.2+zstd.1.5.7				X							
