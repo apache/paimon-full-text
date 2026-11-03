@@ -164,7 +164,8 @@ jobs:
             --javadoc "$javadoc_jar"
 
   python:
-    runs-on: ubuntu-latest
+    # setup-python provides Python 3.8 binaries for Ubuntu 22.04.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -179,9 +180,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-ubuntu-22.04-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-ubuntu-22.04-cargo-
 
       - name: Set up Python
         uses: actions/setup-python@v5
