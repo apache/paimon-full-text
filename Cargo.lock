@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "paimon-ftindex-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "icu_segmenter",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "paimon-ftindex-ffi"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "paimon-ftindex-core",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "paimon-ftindex-jni"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "jni",
