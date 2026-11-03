@@ -58,6 +58,13 @@ fulltext.with-position
 The standalone library accepts both unprefixed keys and `fulltext.` prefixed
 keys.
 
+`fulltext.tokenizer` accepts `default`, `simple`, `whitespace`, `raw`,
+`ngram`, `jieba`, `icu`, and `icu/split`. ICU uses built-in dictionaries for
+mixed-language word segmentation. `icu/split` additionally splits each word
+on non-alphanumeric characters, so `hello_world` and `alpha.beta` can be
+searched by their individual parts. Both modes support the existing
+lower-case, stemming, stop-word, ASCII-folding, and position options.
+
 Query JSON supports `match`, `multi_match`, `match_phrase`, `boolean`, and
 boost-demotion queries. `match` accepts `fuzziness`, `max_expansions`, and
 `prefix_length`; use `fuzziness: "auto"` for automatic edit distance. If

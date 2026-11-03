@@ -54,10 +54,22 @@ Supported tokenizers in this first implementation:
 - `raw`
 - `ngram`
 - `jieba`
+- `icu`
+- `icu/split`
 
 Default tokenizer behavior uses English full-text defaults: lower-case,
 stemming, stop-word removal, ASCII folding, max token length 40, and positions.
 Set `with-position=false` only when phrase search is not needed.
+
+For mixed Chinese and English text, set `fulltext.tokenizer=icu` to use
+Unicode word boundaries and built-in ICU dictionaries; no model download is
+required. Use `fulltext.tokenizer=icu/split` to additionally split tokens on
+non-alphanumeric characters, for example `hello_world` into `hello` and
+`world`, and `alpha.beta` into `alpha` and `beta`. The split mode only emits
+the parts, without retaining the original token. Neither mode splits
+camelCase identifiers. Both modes use the same configurable filters as the
+existing tokenizers. For technical text, consider `fulltext.stem=false` and
+`fulltext.remove-stop-words=false` to preserve identifiers and common words.
 
 Readers expose archived Tantivy files through a seek-on-demand directory, so
 opening an index reads the envelope and Tantivy metadata without loading all

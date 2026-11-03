@@ -21,6 +21,7 @@ use crate::error::{FtIndexError, Result};
 use crate::io::{FullTextReadMetrics, ReadMetrics, ReadRequest, SeekRead, SeekWrite};
 use crate::query::{BooleanOccur, MatchOperator, QuerySpec};
 use crate::storage::{read_header, write_envelope_from_paths, ArchiveFileEntry, IndexHeader};
+use crate::tokenizer::icu::IcuTokenizer;
 use crate::tokenizer::{TokenizerConfig, TokenizerKind};
 use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
 use roaring::RoaringTreemap;
@@ -363,6 +364,8 @@ fn tokenizer_name(config: &TokenizerConfig) -> &'static str {
         TokenizerKind::Raw => "paimon_custom",
         TokenizerKind::Ngram => "paimon_ngram",
         TokenizerKind::Jieba => "paimon_jieba",
+        TokenizerKind::Icu => "paimon_icu",
+        TokenizerKind::IcuSplit => "paimon_icu_split",
     }
 }
 
@@ -399,6 +402,10 @@ fn build_text_analyzer(config: &TokenizerConfig) -> Result<TextAnalyzer> {
             let mut tokenizer = JiebaTokenizer::with_search_mode(config.jieba_search_mode);
             tokenizer.set_ordinal_position_mode(config.jieba_ordinal_position);
             TextAnalyzer::builder(tokenizer).dynamic()
+        }
+        TokenizerKind::Icu => TextAnalyzer::builder(IcuTokenizer::default()).dynamic(),
+        TokenizerKind::IcuSplit => {
+            TextAnalyzer::builder(IcuTokenizer::default().with_simple_split()).dynamic()
         }
     };
     builder = builder.filter_dynamic(RemoveLongFilter::limit(config.max_token_length));
