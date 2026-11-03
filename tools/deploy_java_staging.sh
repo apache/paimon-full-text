@@ -247,7 +247,7 @@ check_java_package_inputs_clean
 
 validate_github_run() {
   local run_output
-  local run_info
+  local run_info=()
   if ! run_output=$(
     gh run view "$RUN_ID" \
       --repo "$REPO" \
@@ -257,7 +257,10 @@ validate_github_run() {
     echo "Failed to read GitHub Actions run: $RUN_ID" >&2
     exit 1
   fi
-  mapfile -t run_info <<<"$run_output"
+  local run_info_line
+  while IFS= read -r run_info_line; do
+    run_info+=("$run_info_line")
+  done <<<"$run_output"
 
   local run_status=${run_info[0]:-}
   local run_conclusion=${run_info[1]:-}
