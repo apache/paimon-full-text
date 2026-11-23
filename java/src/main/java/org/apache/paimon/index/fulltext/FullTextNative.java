@@ -132,5 +132,7 @@ final class FullTextNative {
 
     static native FullTextReadMetrics readMetrics(long readerPtr);
 
+    static native String defaultTextField(long readerPtr);
+
     static native void freeReader(long readerPtr);
 }

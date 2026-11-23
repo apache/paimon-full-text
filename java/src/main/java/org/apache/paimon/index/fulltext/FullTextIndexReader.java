@@ -57,6 +57,14 @@ public final class FullTextIndexReader implements AutoCloseable {
         return FullTextNative.readMetrics(requireOpen());
     }
 
+    /**
+     * Returns the text field used by {@link FullTextIndexWriter#addDocument(long, String)}.
+     * The field is read from this index's resolved configuration.
+     */
+    public String defaultTextField() {
+        return FullTextNative.defaultTextField(requireOpen());
+    }
+
     public void prewarm() {
         FullTextNative.prewarm(requireOpen());
     }

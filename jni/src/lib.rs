@@ -16,7 +16,7 @@
 // under the License.
 
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
-use jni::sys::{jint, jlong, jobject};
+use jni::sys::{jint, jlong, jobject, jstring};
 use jni::{JNIEnv, JavaVM};
 use paimon_ftindex_core::io::{ReadRequest, SeekRead, SeekWrite};
 use paimon_ftindex_core::{FullTextIndexConfig, FullTextIndexReader, FullTextIndexWriter};
@@ -279,6 +279,18 @@ pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_read
 }
 
 #[no_mangle]
+pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_defaultTextField(
+    mut env: JNIEnv,
+    _class: JClass,
+    reader_ptr: jlong,
+) -> jstring {
+    match default_text_field(&mut env, reader_ptr) {
+        Ok(field) => field,
+        Err(e) => throw_and_return(&mut env, &e, ptr::null_mut()),
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_org_apache_paimon_index_fulltext_FullTextNative_freeReader(
     _env: JNIEnv,
     _class: JClass,
@@ -402,6 +414,14 @@ fn search(
 fn prewarm(reader_ptr: jlong) -> Result<(), String> {
     let reader = handle_ref::<ReaderHandle>(reader_ptr, "reader")?;
     reader.inner.prewarm().map_err(|e| e.to_string())
+}
+
+fn default_text_field(env: &mut JNIEnv, reader_ptr: jlong) -> Result<jstring, String> {
+    let reader = handle_ref::<ReaderHandle>(reader_ptr, "reader")?;
+    let field = reader.inner.metadata().config.default_text_field();
+    env.new_string(field)
+        .map(|field| field.into_raw())
+        .map_err(|e| e.to_string())
 }
 
 fn read_metrics(env: &mut JNIEnv, reader_ptr: jlong) -> Result<jobject, String> {
