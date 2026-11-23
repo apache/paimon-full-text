@@ -24,6 +24,7 @@ import org.junit.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -63,6 +64,7 @@ public class FullTextNativeRoundTripTest {
                 };
 
         try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
+            assertEquals("text", reader.defaultTextField());
             int bytesReadAtOpen = bytesRead.get();
             FullTextReadMetrics metrics = reader.readMetrics();
             assertTrue(metrics.preadCalls() >= 2);
@@ -112,6 +114,7 @@ public class FullTextNativeRoundTripTest {
                         preadBytes(indexBytes, position, buffer, offset, length);
 
         try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
+            assertEquals("title", reader.defaultTextField());
             FullTextSearchResult result =
                     reader.search("{\"match\":{\"query\":\"paimon\"}}", 10);
 
@@ -119,6 +122,55 @@ public class FullTextNativeRoundTripTest {
             assertEquals(20L, result.rowIds()[0]);
             assertTrue(result.scores()[0] > 0.0f);
         }
+    }
+
+    @Test
+    public void testDefaultTextFieldReflectsArchiveConfiguration() throws Exception {
+        assumeTrue("native library must be available", nativeLibraryAvailable());
+        for (Map<String, String> options :
+                Arrays.asList(
+                    Collections.singletonMap("text-field", "内容"),
+                    Collections.singletonMap("text-fields", "body,title"),
+                    conflictingFieldOptions()
+                )) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try (FullTextIndexWriter writer = FullTextIndexWriter.create(options)) {
+                writer.addDocument(3L, "apache paimon");
+                writer.writeIndex(output::write);
+            }
+            byte[] indexBytes = output.toByteArray();
+            FullTextIndexReader reader =
+                    new FullTextIndexReader(
+                            (position, buffer, offset, length) ->
+                                    preadBytes(indexBytes, position, buffer, offset, length));
+            String field;
+            try {
+                field = reader.defaultTextField();
+                assertEquals(1, reader.search(matchQuery("paimon", field), 10).size());
+                if (options.containsKey("text-field")) {
+                    assertEquals("内容", field);
+                } else if (!options.containsKey("columns")) {
+                    assertEquals("body", field);
+                } else {
+                    assertTrue(field.equals("body") || field.equals("title"));
+                }
+            } finally {
+                reader.close();
+            }
+            try {
+                reader.defaultTextField();
+                fail("Expected closed reader to fail");
+            } catch (IllegalStateException expected) {
+                assertEquals("FullTextIndexReader is closed", expected.getMessage());
+            }
+        }
+    }
+
+    private static Map<String, String> conflictingFieldOptions() {
+        Map<String, String> options = new LinkedHashMap<>();
+        options.put("text-fields", "body");
+        options.put("columns", "title");
+        return options;
     }
 
     private static boolean nativeLibraryAvailable() {
