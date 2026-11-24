@@ -23,7 +23,7 @@ use std::fmt;
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tantivy::directory::error::{DeleteError, LockError, OpenReadError, OpenWriteError};
 use tantivy::directory::WritePtr;
 use tantivy::directory::{
@@ -33,6 +33,8 @@ use tantivy_common::HasLen;
 
 const READ_CACHE_BLOCK_BYTES: usize = 64 * 1024;
 const READ_CACHE_MAX_BLOCKS: usize = 256;
+/// Dead entries of the shared-read table are swept whenever it grows past this many entries.
+const SHARED_READS_SWEEP_LEN: usize = 1024;
 
 pub(crate) struct ArchiveDirectory<R> {
     input: Arc<R>,
@@ -224,8 +226,7 @@ impl<R: SeekRead + 'static> FileHandle for ArchiveFileHandle<R> {
             .start
             .checked_add(relative_start)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
-        let data = vec![0u8; range.len()];
-        self.read_direct(pos, data)
+        self.read_shared(pos, range.len())
     }
 }
 
@@ -258,6 +259,29 @@ impl<R: SeekRead + 'static> ArchiveFileHandle<R> {
         Ok(Some(block.slice(start..start + range.len())))
     }
 
+    /// Reads a range that is too large for the block cache, sharing the bytes with every other
+    /// read of the same range that is still alive.
+    ///
+    /// Tantivy assumes that reading a range is free, as it is with mmap. A phrase query reads the
+    /// positions of a term once per occurrence of the term in the phrase and keeps all of them
+    /// until the segment is scored, so without sharing a frequent repeated token costs its whole
+    /// position list in I/O and memory for every occurrence.
+    ///
+    /// Only a weak reference is kept here: the bytes are freed as soon as Tantivy drops them, so
+    /// this never holds memory that is not in use.
+    fn read_shared(&self, pos: u64, len: usize) -> io::Result<OwnedBytes> {
+        let key = (pos, len);
+        if let Some(data) = self.cache.get_shared(key)? {
+            return Ok(OwnedBytes::new(data));
+        }
+        // Allocated as `Arc<[u8]>` up front so that sharing it needs no copy.
+        let mut data: Arc<[u8]> = std::iter::repeat_n(0u8, len).collect();
+        let buf = Arc::get_mut(&mut data).expect("newly created buffer is not shared");
+        self.input.pread(&mut [ReadRequest::new(pos, buf)])?;
+        self.cache.insert_shared(key, &data)?;
+        Ok(OwnedBytes::new(data))
+    }
+
     fn read_direct(&self, pos: u64, mut data: Vec<u8>) -> io::Result<OwnedBytes> {
         let mut request = [ReadRequest::new(pos, data.as_mut_slice())];
         self.input.pread(&mut request)?;
@@ -274,6 +298,8 @@ struct ArchiveReadCache {
 struct ArchiveReadCacheInner {
     blocks: HashMap<u64, OwnedBytes>,
     order: VecDeque<u64>,
+    /// Large reads currently held by Tantivy, by archive position and length.
+    shared: HashMap<(u64, usize), Weak<[u8]>>,
 }
 
 impl ArchiveReadCache {
@@ -294,6 +320,32 @@ impl ArchiveReadCache {
             self.metrics.record_cache_hit();
         }
         Ok(block)
+    }
+
+    fn get_shared(&self, key: (u64, usize)) -> io::Result<Option<Arc<[u8]>>> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| io::Error::other("archive read cache lock poisoned"))?;
+        let data = inner.shared.get(&key).and_then(Weak::upgrade);
+        if data.is_some() {
+            self.metrics.record_cache_hit();
+        } else {
+            inner.shared.remove(&key);
+        }
+        Ok(data)
+    }
+
+    fn insert_shared(&self, key: (u64, usize), data: &Arc<[u8]>) -> io::Result<()> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| io::Error::other("archive read cache lock poisoned"))?;
+        if inner.shared.len() >= SHARED_READS_SWEEP_LEN {
+            inner.shared.retain(|_, data| data.strong_count() > 0);
+        }
+        inner.shared.insert(key, Arc::downgrade(data));
+        Ok(())
     }
 
     fn record_miss(&self) {
@@ -510,5 +562,55 @@ mod tests {
         assert_eq!(metrics.cache_hits, 1);
         assert_eq!(metrics.cache_misses, 1);
         assert_eq!(metrics.cached_blocks, 1);
+    }
+    #[test]
+    fn archive_directory_shares_large_reads_while_they_are_alive() {
+        let len = READ_CACHE_BLOCK_BYTES * 4;
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        let metrics = Arc::new(ReadMetrics::default());
+        let input = Arc::new(CountingDataReader {
+            data: data.clone(),
+            read_calls: AtomicUsize::new(0),
+        });
+        let directory = ArchiveDirectory::new_with_metrics(
+            Arc::clone(&input),
+            0,
+            &[ArchiveFileEntry {
+                name: "segment.pos".to_string(),
+                offset: 0,
+                length: len as u64,
+            }],
+            Arc::clone(&metrics),
+        )
+        .expect("archive directory");
+        let file = directory.open_read(Path::new("segment.pos")).expect("file");
+        let range = 100..READ_CACHE_BLOCK_BYTES * 3;
+        let reads = || input.read_calls.load(Ordering::SeqCst);
+
+        let first = file.read_bytes_slice(range.clone()).expect("first");
+        let second = file.read_bytes_slice(range.clone()).expect("second");
+        assert_eq!(first.as_slice(), &data[range.clone()]);
+        assert_eq!(second.as_slice(), &data[range.clone()]);
+        assert_eq!(first.as_slice().as_ptr(), second.as_slice().as_ptr());
+        assert_eq!(reads(), 1);
+        assert_eq!(metrics.snapshot().cache_hits, 1);
+
+        // A different range is not shared, even when it overlaps.
+        let other = file
+            .read_bytes_slice(101..READ_CACHE_BLOCK_BYTES * 3)
+            .expect("other");
+        assert_eq!(other.as_slice(), &data[101..READ_CACHE_BLOCK_BYTES * 3]);
+        assert_eq!(reads(), 2);
+
+        // One live holder is enough to keep sharing.
+        drop(first);
+        let third = file.read_bytes_slice(range.clone()).expect("third");
+        assert_eq!(reads(), 2);
+
+        // Nothing is retained once every holder is gone.
+        drop((second, third));
+        let again = file.read_bytes_slice(range.clone()).expect("again");
+        assert_eq!(again.as_slice(), &data[range]);
+        assert_eq!(reads(), 3);
     }
 }

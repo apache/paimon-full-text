@@ -47,8 +47,6 @@ use tantivy_fst::Automaton;
 use tantivy_jieba::JiebaTokenizer;
 use tempfile::TempDir;
 
-const INDEX_WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct FullTextSearchResult {
     pub row_ids: Vec<i64>,
@@ -85,7 +83,10 @@ impl FullTextIndexWriter {
             .get_field(&config.row_id_field)
             .map_err(|_| FtIndexError::InvalidStorage("missing row_id field".to_string()))?;
         let text_fields = text_field_map(&schema, &config)?;
-        let index_writer = index.writer_with_num_threads(1, INDEX_WRITER_MEMORY_BUDGET_BYTES)?;
+        let index_writer = index.writer_with_num_threads(
+            config.build.writer_threads,
+            config.build.writer_memory_bytes,
+        )?;
         Ok(Self {
             config,
             state: Some(FullTextIndexWriterState {

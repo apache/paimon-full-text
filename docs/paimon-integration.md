@@ -53,10 +53,21 @@ fulltext.language
 fulltext.remove-stop-words
 fulltext.stop-words
 fulltext.with-position
+fulltext.build.writer-threads
+fulltext.build.writer-memory-size
 ```
 
 The standalone library accepts both unprefixed keys and `fulltext.` prefixed
 keys.
+
+`fulltext.build.*` options only tune how a writer builds an index; they are not
+persisted in the index metadata and do not affect readers.
+`build.writer-threads` (default `1`) is the number of Tantivy indexing threads
+of one writer, and `build.writer-memory-size` (default `50000000`) is the
+memory budget those threads share. Sizes accept `k`/`kb`, `m`/`mb` and
+`g`/`gb` suffixes. Tantivy requires at least 15,000,000 bytes and less than
+4GB of budget per thread, so raise the budget together with the thread count.
+More threads build faster and leave more segments in the archive.
 
 `fulltext.tokenizer` accepts `default`, `simple`, `whitespace`, `raw`,
 `ngram`, `jieba`, `icu`, and `icu/split`. ICU uses built-in dictionaries for

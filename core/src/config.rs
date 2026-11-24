@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::build::IndexBuildConfig;
 use crate::tokenizer::TokenizerConfig;
 use crate::{FtIndexError, Result};
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,10 @@ pub struct FullTextIndexConfig {
     pub text_fields: Vec<String>,
     #[serde(default)]
     pub tokenizer: TokenizerConfig,
+    /// Resources a writer uses to build the index. Not part of the index itself, so it is never
+    /// persisted in the index metadata; readers always see the default.
+    #[serde(skip)]
+    pub build: IndexBuildConfig,
 }
 
 impl Default for FullTextIndexConfig {
@@ -36,6 +41,7 @@ impl Default for FullTextIndexConfig {
             row_id_field: default_row_id_field(),
             text_fields: default_text_fields(),
             tokenizer: TokenizerConfig::default(),
+            build: IndexBuildConfig::default(),
         }
     }
 }
@@ -55,6 +61,7 @@ impl FullTextIndexConfig {
 
     pub fn from_options(options: &HashMap<String, String>) -> Result<Self> {
         let tokenizer = TokenizerConfig::from_options(options)?;
+        let build = IndexBuildConfig::from_options(options)?;
         let mut row_id_field = None;
         let mut text_field = None;
         let mut text_fields = None;
@@ -80,6 +87,7 @@ impl FullTextIndexConfig {
             row_id_field: row_id_field.unwrap_or_else(default_row_id_field),
             text_fields: fields,
             tokenizer,
+            build,
         };
         config.validate()?;
         Ok(config)
@@ -96,6 +104,11 @@ impl FullTextIndexConfig {
         S: Into<String>,
     {
         self.text_fields = fields.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_build(mut self, build: IndexBuildConfig) -> Self {
+        self.build = build;
         self
     }
 
@@ -133,6 +146,7 @@ impl FullTextIndexConfig {
                 return invalid("text-fields", "must not contain the row id field");
             }
         }
+        self.build.validate()?;
         self.tokenizer.validate()
     }
 }
@@ -147,7 +161,7 @@ pub struct FullTextIndexMetadata {
     pub tantivy_version: String,
 }
 
-fn normalize_option_key(raw_key: &str) -> String {
+pub(crate) fn normalize_option_key(raw_key: &str) -> String {
     raw_key
         .strip_prefix("fulltext.")
         .or_else(|| raw_key.strip_prefix("tantivy."))

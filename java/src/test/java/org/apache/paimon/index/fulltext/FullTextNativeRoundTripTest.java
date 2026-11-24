@@ -24,9 +24,12 @@ import org.junit.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.lang.ref.WeakReference;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -171,6 +174,80 @@ public class FullTextNativeRoundTripTest {
         options.put("text-fields", "body");
         options.put("columns", "title");
         return options;
+    }
+
+    @Test
+    public void testCallbackBuffersAreReleasedDuringNativeCall() throws Exception {
+        assumeTrue(
+                "PAIMON_FTINDEX_JNI_LIB_PATH must point to the built JNI library "
+                        + "or the native library must be present in classpath resources",
+                nativeLibraryAvailable());
+
+        // The native side allocates one byte[] per callback. Each must become collectable as
+        // soon as its callback returns, not only when the enclosing native call returns:
+        // otherwise a single write or search pins every byte it transfers on the Java heap.
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        List<WeakReference<byte[]>> written = new ArrayList<>();
+        AtomicInteger writtenStillReachable = new AtomicInteger();
+        Map<String, String> options = new LinkedHashMap<>();
+        options.put("build.writer-threads", "2");
+        options.put("build.writer-memory-size", "40mb");
+        try (FullTextIndexWriter writer = FullTextIndexWriter.create(options)) {
+            StringBuilder text = new StringBuilder();
+            for (int i = 0; i < 20000; i++) {
+                text.setLength(0);
+                for (int j = 0; j < 20; j++) {
+                    text.append("term").append((i * 31 + j * 7919) % 50000).append(' ');
+                }
+                writer.addDocument(i, text.toString());
+            }
+            writer.writeIndex(
+                    (buffer, offset, length) -> {
+                        if (written.size() == 20) {
+                            writtenStillReachable.set(countReachableAfterGc(written));
+                        }
+                        output.write(buffer, offset, length);
+                        written.add(new WeakReference<>(buffer));
+                    });
+        }
+        assertTrue("expected more than 20 write callbacks", written.size() > 20);
+        assertEquals(0, writtenStillReachable.get());
+
+        byte[] indexBytes = output.toByteArray();
+        List<WeakReference<byte[]>> read = new ArrayList<>();
+        AtomicInteger maxReadStillReachable = new AtomicInteger();
+        FullTextIndexInput input =
+                (position, buffer, offset, length) -> {
+                    if (read.size() % 8 == 7) {
+                        maxReadStillReachable.accumulateAndGet(
+                                countReachableAfterGc(read), Math::max);
+                    }
+                    preadBytes(indexBytes, position, buffer, offset, length);
+                    read.add(new WeakReference<>(buffer));
+                };
+        try (FullTextIndexReader reader = new FullTextIndexReader(input)) {
+            read.clear();
+            FullTextSearchResult result =
+                    reader.search(matchQuery("term1 term2 term3 term4 term5 term6", "text"), 10);
+            assertTrue(result.size() > 0);
+            assertTrue("expected at least 8 reads in one search", read.size() >= 8);
+            assertEquals(0, maxReadStillReachable.get());
+        }
+    }
+
+    private static int countReachableAfterGc(List<WeakReference<byte[]>> references) {
+        int reachable = references.size();
+        for (int attempt = 0; attempt < 20 && reachable > 0; attempt++) {
+            System.gc();
+            System.runFinalization();
+            reachable = 0;
+            for (WeakReference<byte[]> reference : references) {
+                if (reference.get() != null) {
+                    reachable++;
+                }
+            }
+        }
+        return reachable;
     }
 
     private static boolean nativeLibraryAvailable() {
