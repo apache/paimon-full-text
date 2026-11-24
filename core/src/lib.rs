@@ -16,6 +16,7 @@
 // under the License.
 
 mod archive_directory;
+pub mod build;
 pub mod config;
 pub mod error;
 pub mod index;
@@ -24,6 +25,7 @@ mod query;
 pub mod storage;
 pub mod tokenizer;
 
+pub use build::IndexBuildConfig;
 pub use config::{FullTextIndexConfig, FullTextIndexMetadata};
 pub use error::{FtIndexError, Result};
 pub use index::{FullTextDocument, FullTextIndexReader, FullTextIndexWriter, FullTextSearchResult};

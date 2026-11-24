@@ -994,3 +994,56 @@ fn boolean_query_rejects_only_must_not() -> anyhow::Result<()> {
         .contains("at least one should or must clause"));
     Ok(())
 }
+
+#[test]
+fn build_options_are_applied_but_not_persisted() -> anyhow::Result<()> {
+    let options: HashMap<String, String> = [
+        ("fulltext.build.writer-threads", "2"),
+        ("fulltext.build.writer-memory-size", "40mb"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let config = FullTextIndexConfig::from_options(&options)?;
+    assert_eq!(config.build.writer_threads, 2);
+    assert_eq!(config.build.writer_memory_bytes, 40 << 20);
+
+    let mut writer = FullTextIndexWriter::new(config)?;
+    for row_id in 0..5000 {
+        writer.add_document(row_id, format!("shared marker{row_id}"))?;
+    }
+    let mut output = PosWriter::new(Vec::new());
+    writer.write(&mut output)?;
+    let bytes = output.into_inner();
+
+    let (header, _) = read_header(&SliceReader::new(bytes.clone()))?;
+    let header_json = serde_json::to_value(&header)?;
+    assert!(header_json["metadata"]["config"].get("build").is_none());
+
+    let reader = FullTextIndexReader::open(SliceReader::new(bytes))?;
+    assert_eq!(reader.metadata().config, FullTextIndexConfig::new());
+    assert_eq!(reader.metadata().document_count, 5000);
+    let result = reader.search(match_query("marker4242", "text"), 10)?;
+    assert_eq!(result.row_ids, vec![4242]);
+    Ok(())
+}
+
+#[test]
+fn invalid_build_options_are_rejected() {
+    let options = |key: &str, value: &str| -> HashMap<String, String> {
+        [(key.to_string(), value.to_string())].into_iter().collect()
+    };
+    let err = FullTextIndexConfig::from_options(&options("build.writer-threads", "0")).unwrap_err();
+    assert!(err.to_string().contains("build.writer-threads"), "{err}");
+    let err =
+        FullTextIndexConfig::from_options(&options("build.writer-memory-size", "1mb")).unwrap_err();
+    assert!(
+        err.to_string().contains("build.writer-memory-size"),
+        "{err}"
+    );
+
+    // A config assembled in code is validated by the writer too, instead of panicking in Tantivy.
+    let mut config = FullTextIndexConfig::new();
+    config.build.writer_threads = 0;
+    assert!(FullTextIndexWriter::new(config).is_err());
+}

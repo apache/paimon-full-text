@@ -40,16 +40,17 @@ impl SeekWrite for JavaOutput {
         let array = env
             .new_byte_array(buf.len() as i32)
             .map_err(|e| io::Error::other(format!("new_byte_array failed: {e}")))?;
+        // See `JavaInput::pread`: release the array as soon as this call is done with it.
+        let array = env.auto_local(array);
         let signed: Vec<i8> = buf.iter().map(|b| *b as i8).collect();
-        env.set_byte_array_region(&array, 0, &signed)
+        env.set_byte_array_region(&*array, 0, &signed)
             .map_err(|e| io::Error::other(format!("set_byte_array_region failed: {e}")))?;
-        let array_obj = JObject::from(array);
         env.call_method(
             self.output.as_obj(),
             "write",
             "([BII)V",
             &[
-                JValue::Object(&array_obj),
+                JValue::Object(&array),
                 JValue::Int(0),
                 JValue::Int(buf.len() as i32),
             ],
@@ -92,20 +93,25 @@ impl SeekRead for JavaInput {
             let buffer = env
                 .new_byte_array(length)
                 .map_err(|e| io::Error::other(format!("new_byte_array failed: {e}")))?;
-            let buffer_obj = JObject::from(buffer);
+            // Searches run on a Java thread, so a local reference would otherwise live until the
+            // enclosing native method (a whole `search`) returns, pinning every array read so far
+            // on the Java heap. `AutoLocal` deletes the reference at the end of this iteration, on
+            // success and on error. By then the bytes have been copied into `range.buf`, which is
+            // Rust memory, and nothing below keeps the array.
+            let buffer = env.auto_local(buffer);
             env.call_method(
                 self.input.as_obj(),
                 "pread",
                 "(J[BII)V",
                 &[
                     JValue::Long(position),
-                    JValue::Object(&buffer_obj),
+                    JValue::Object(&buffer),
                     JValue::Int(0),
                     JValue::Int(length),
                 ],
             )
             .map_err(|e| io::Error::other(format!("Java input pread failed: {e}")))?;
-            copy_java_buffer(&mut env, JByteArray::from(buffer_obj), range.buf)?;
+            copy_java_buffer(&mut env, &buffer, range.buf)?;
         }
         Ok(())
     }
@@ -113,11 +119,11 @@ impl SeekRead for JavaInput {
 
 fn copy_java_buffer(
     env: &mut JNIEnv<'_>,
-    buffer: JByteArray<'_>,
+    buffer: &JByteArray<'_>,
     output: &mut [u8],
 ) -> io::Result<()> {
     let length = env
-        .get_array_length(&buffer)
+        .get_array_length(buffer)
         .map_err(|e| io::Error::other(format!("get_array_length failed: {e}")))?
         as usize;
     if length != output.len() {
@@ -132,7 +138,7 @@ fn copy_java_buffer(
     }
     if length > 0 {
         let mut signed = vec![0i8; output.len()];
-        env.get_byte_array_region(&buffer, 0, &mut signed)
+        env.get_byte_array_region(buffer, 0, &mut signed)
             .map_err(|e| io::Error::other(format!("get_byte_array_region failed: {e}")))?;
         for (dst, src) in output.iter_mut().zip(signed) {
             *dst = src as u8;
